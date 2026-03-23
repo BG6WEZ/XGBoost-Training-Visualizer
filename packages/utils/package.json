@@ -1,0 +1,17 @@
+{
+  "name": "@xgboost-vis/utils",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./formatters": "./src/formatters.ts",
+    "./validators": "./src/validators.ts",
+    "./constants": "./src/constants.ts"
+  },
+  "dependencies": {
+    "@xgboost-vis/types": "workspace:*",
+    "date-fns": "^3.0.0",
+    "zod": "^3.22.0"
+  }
+}
