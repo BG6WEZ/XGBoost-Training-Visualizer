@@ -1,16 +1,30 @@
-FROM node:20-alpine
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml* ./
+# 使用阿里云镜像源
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g pnpm
-RUN pnpm install
+# 安装 Python 依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-COPY . .
+# 复制应用代码到 /app/app（保持与本地开发一致的路径结构）
+COPY app/ /app/app/
+COPY migrations/ /app/migrations/
 
-RUN pnpm build
+# 创建非 root 用户
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
 
-EXPOSE 4000
+EXPOSE 8000
 
-CMD ["pnpm", "start"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

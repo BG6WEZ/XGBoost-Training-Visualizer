@@ -1,0 +1,23 @@
+# XGBoost 和数据处理
+xgboost==2.0.3
+pandas==2.2.0
+numpy==1.26.4
+scikit-learn==1.4.0
+
+# 数据库
+sqlalchemy[asyncio]==2.0.27
+asyncpg==0.29.0
+
+# Redis
+redis[asyncio]==5.0.1
+
+# MinIO
+minio==7.2.4
+
+# 配置
+pydantic==2.6.1
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+
+# 文件操作
+aiofiles==23.2.1

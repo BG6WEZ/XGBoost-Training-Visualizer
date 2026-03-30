@@ -2,15 +2,9 @@
   "name": "@xgboost-vis/types",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./experiment": "./src/experiment.ts",
-    "./dataset": "./src/dataset.ts",
-    "./training": "./src/training.ts",
-    "./api": "./src/api.ts"
-  },
-  "dependencies": {
-    "typescript": "^5.4.0"
+    ".": "./src/index.ts"
   }
 }

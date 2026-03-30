@@ -1864,15 +1864,14 @@ pnpm docker:logs    # 查看日志
 
 | 文档 | 说明 |
 |------|------|
-| [TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md) | 技术架构设计 |
-| [UI_DESIGN_SPECIFICATION.md](UI_DESIGN_SPECIFICATION.md) | UI 设计规范 |
-| [CORE_FEATURES_DESIGN.md](CORE_FEATURES_DESIGN.md) | 核心功能详细设计 |
-| [DEVELOPMENT_COLLABORATION_GUIDE.md](DEVELOPMENT_COLLABORATION_GUIDE.md) | 开发协作规范（包依赖、多Agent协作） |
-| [FEATURE_ENHANCEMENTS.md](FEATURE_ENHANCEMENTS.md) | 功能增强建议与评估 |
+| [TECHNICAL_ARCHITECTURE.md](../architecture/TECHNICAL_ARCHITECTURE.md) | 技术架构设计 |
+| [UI_DESIGN_SPECIFICATION.md](../design/UI_DESIGN_SPECIFICATION.md) | UI 设计规范 |
+| [CORE_FEATURES_DESIGN.md](../architecture/CORE_FEATURES_DESIGN.md) | 核心功能详细设计 |
+| [DEVELOPMENT_COLLABORATION_GUIDE.md](../planning/DEVELOPMENT_COLLABORATION_GUIDE.md) | 开发协作规范（包依赖、多Agent协作） |
 
 ### 9.3 参考资料
 - XGBoost 官方文档: https://xgboost.readthedocs.io/
-- 设计参考文档: `docs/references/`
+- 设计参考文档: `docs/design/references/`
 - 示例数据集: `dataset/building_energy_data_extended.csv`
 
 ---
