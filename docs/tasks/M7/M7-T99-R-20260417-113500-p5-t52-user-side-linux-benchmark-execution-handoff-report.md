@@ -143,6 +143,27 @@ Authentication Failed: Bad credentials
 - 当前执行环境下 **GitHub API 写入/读取凭证不可用**
 - 无法绕过本机 `git push` 阻断
 
+### 6. 尝试 GitHub CLI 触发 workflow
+
+为绕开浏览器登录态，又继续尝试：
+
+```bash
+gh --version
+gh auth status
+gh workflow run .github/workflows/benchmark-linux.yml -f task_id=M7-T99 --ref master
+```
+
+实际结果：
+
+```text
+gh : 无法将“gh”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。
+```
+
+结论：
+
+- 当前机器 **未安装 GitHub CLI**
+- 因此无法通过 `gh workflow run` 触发 workflow
+
 ---
 
 ## 四、当前阻塞状态
@@ -152,6 +173,7 @@ Authentication Failed: Bad credentials
 | 本地提交 | ✓ 已完成 | 提交 `dd49f5b`、`7c26d36` 已生成 |
 | 代码推送 | ✓ 已完成 | 远端 `master` 已与本地 `HEAD` 同步 |
 | GitHub API 替代路径 | ✗ 阻塞 | MCP 返回 `Bad credentials` |
+| GitHub CLI 替代路径 | ✗ 阻塞 | `gh` 未安装 |
 | GitHub Actions 触发 | ✗ 阻塞 | 浏览器未登录 GitHub，无 `Run workflow` 按钮 |
 | Linux benchmark 执行 | ✗ 阻塞 | workflow 仍未运行 |
 
@@ -164,6 +186,7 @@ Authentication Failed: Bad credentials
 - [x] 已完成本地提交固化（`dd49f5b`）
 - [x] 已完成代码推送并确认远端 `master` 与本地 `HEAD` 一致
 - [x] 已尝试 GitHub API 替代路径
+- [x] 已尝试 GitHub CLI 替代路径
 - [x] 已尝试在 GitHub Actions 页面手动触发 workflow
 
 ---
@@ -182,7 +205,8 @@ Authentication Failed: Bad credentials
 
 1. **网页认证阻断**：当前浏览器未登录 GitHub，无法在 Actions 页面点击 `Run workflow`。
 2. **API 凭证不可用**：GitHub MCP 返回 `Bad credentials`，无法通过 API 触发或写入。
-3. **外部权限依赖**：Linux benchmark 的真正执行仍依赖具备仓库操作权限的 GitHub 会话。
+3. **CLI 工具缺失**：当前机器未安装 `gh`，无法通过 CLI 触发 workflow。
+4. **外部权限依赖**：Linux benchmark 的真正执行仍依赖具备仓库操作权限的 GitHub 会话。
 
 ---
 
@@ -195,7 +219,8 @@ Authentication Failed: Bad credentials
 1. 当前尚未取得原生 Linux benchmark 结果
 2. GitHub Actions workflow 仍未运行
 3. 当前浏览器未登录，无法手动触发 `workflow_dispatch`
-4. `Task 5.2` 的核心验收证据依然缺失
+4. 当前无可用 GitHub API 凭证，且未安装 `gh`
+5. `Task 5.2` 的核心验收证据依然缺失
 
 ---
 
