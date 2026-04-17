@@ -136,6 +136,11 @@ async def run_single_request(
     return result
 
 
+async def _semaphore_request(client, method, url, headers, body, file_path, sem):
+    """使用信号量限制并发的请求。"""
+    async with sem:
+        return await run_single_request(client, method, url, headers, body, file_path)
+
 async def run_endpoint_benchmark(
     base_url: str,
     endpoint: dict,
@@ -167,10 +172,11 @@ async def run_endpoint_benchmark(
     timeout = httpx.Timeout(30.0, connect=10.0)
 
     async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
-        # 创建并发任务
+        # 使用信号量分批控制并发，避免同时创建大量连接
+        sem = asyncio.Semaphore(concurrency)
         tasks = []
         for _ in range(total_requests):
-            tasks.append(run_single_request(client, endpoint["method"], url, headers, body, file_path))
+            tasks.append(_semaphore_request(client, endpoint["method"], url, headers, body, file_path, sem))
 
         # 并发执行
         responses = await asyncio.gather(*tasks, return_exceptions=True)
