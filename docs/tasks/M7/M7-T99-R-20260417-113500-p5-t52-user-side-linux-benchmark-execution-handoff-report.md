@@ -82,19 +82,51 @@ git commit -m "docs: add M7 task 96-99 reports"
 git push origin master
 ```
 
-实际结果：
+第一次尝试结果：
 
 ```text
 fatal: unable to access 'https://github.com/BG6WEZ/XGBoost-Training-Visualizer.git/':
 Recv failure: Connection was reset
 ```
 
+随后再次执行：
+
+```bash
+git push origin master
+git rev-parse HEAD
+git ls-remote origin refs/heads/master
+```
+
+最终结果：
+
+- `git push origin master` 返回 `Everything up-to-date`
+- 本地 `HEAD`：`7c26d360bb55c65c6e03165b16bebeca7dcc4480`
+- 远端 `refs/heads/master`：`7c26d360bb55c65c6e03165b16bebeca7dcc4480`
+
 结论：
 
-- **写入链路失败**
-- **当前无法完成 push**
+- **当前远端已与本地同步**
+- **GitHub HTTPS 写入链路已恢复可用**
 
-### 4. 尝试 GitHub API 替代路径
+### 4. 尝试触发 GitHub Actions Workflow
+
+在代码已同步远端后，继续尝试直接触发：
+
+- `https://github.com/BG6WEZ/XGBoost-Training-Visualizer/actions/workflows/benchmark-linux.yml`
+
+实际结果：
+
+- 浏览器页面可打开
+- 当前浏览器会话右上显示 `Sign in`
+- workflow 页面 `Show workflow options` 中仅有 `Create status badge`
+- **没有 `Run workflow` 按钮**
+
+结论：
+
+- 当前阻断点已从“代码无法推送”转为“GitHub 网页会话未登录 / 无手动触发权限”
+- 因此无法生成 run URL 或 run ID
+
+### 5. 尝试 GitHub API 替代路径
 
 实际执行：
 
@@ -117,11 +149,11 @@ Authentication Failed: Bad credentials
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| 本地提交 | ✓ 已完成 | 提交 `dd49f5b` 已生成 |
-| 代码推送 | ✗ 阻塞 | `git push origin master` 返回 `Connection was reset` |
+| 本地提交 | ✓ 已完成 | 提交 `dd49f5b`、`7c26d36` 已生成 |
+| 代码推送 | ✓ 已完成 | 远端 `master` 已与本地 `HEAD` 同步 |
 | GitHub API 替代路径 | ✗ 阻塞 | MCP 返回 `Bad credentials` |
-| GitHub Actions 触发 | ✗ 阻塞 | 代码未成功推送 |
-| Linux benchmark 执行 | ✗ 阻塞 | workflow 未运行 |
+| GitHub Actions 触发 | ✗ 阻塞 | 浏览器未登录 GitHub，无 `Run workflow` 按钮 |
+| Linux benchmark 执行 | ✗ 阻塞 | workflow 仍未运行 |
 
 ---
 
@@ -130,8 +162,9 @@ Authentication Failed: Bad credentials
 - [x] 已确认远端仓库可读（`git ls-remote origin` 成功）
 - [x] 已确认当前分支为 `master`
 - [x] 已完成本地提交固化（`dd49f5b`）
-- [x] 已对写入链路做真实 push 尝试
+- [x] 已完成代码推送并确认远端 `master` 与本地 `HEAD` 一致
 - [x] 已尝试 GitHub API 替代路径
+- [x] 已尝试在 GitHub Actions 页面手动触发 workflow
 
 ---
 
@@ -139,8 +172,7 @@ Authentication Failed: Bad credentials
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| `git push origin master` 成功 | ✗ 未完成 | HTTPS 写入链路被重置 |
-| `benchmark-linux.yml` 在 `ubuntu-latest` 上执行 | ✗ 未完成 | 代码未推送，workflow 无法触发 |
+| `benchmark-linux.yml` 在 `ubuntu-latest` 上执行 | ✗ 未完成 | 浏览器未登录 GitHub，无法手动触发 |
 | 原生 Linux benchmark 结果 | ✗ 未取得 | 仍缺少 Linux runner 执行结果 |
 | `Task 5.2` 是否通过 | ✗ 未判定 | 需等待 Linux benchmark 结果 |
 
@@ -148,9 +180,9 @@ Authentication Failed: Bad credentials
 
 ## 七、风险与限制
 
-1. **网络写入阻断**：当前环境对 GitHub 的读取链路可用，但写入链路被重置。
-2. **API 凭证不可用**：GitHub MCP 返回 `Bad credentials`，无法作为替代写入路径。
-3. **外部依赖阻塞**：Linux benchmark 的真正执行依赖远端仓库更新和 GitHub Actions 运行。
+1. **网页认证阻断**：当前浏览器未登录 GitHub，无法在 Actions 页面点击 `Run workflow`。
+2. **API 凭证不可用**：GitHub MCP 返回 `Bad credentials`，无法通过 API 触发或写入。
+3. **外部权限依赖**：Linux benchmark 的真正执行仍依赖具备仓库操作权限的 GitHub 会话。
 
 ---
 
@@ -161,22 +193,18 @@ Authentication Failed: Bad credentials
 理由：
 
 1. 当前尚未取得原生 Linux benchmark 结果
-2. `git push` 仍未成功
-3. GitHub Actions workflow 仍未运行
+2. GitHub Actions workflow 仍未运行
+3. 当前浏览器未登录，无法手动触发 `workflow_dispatch`
 4. `Task 5.2` 的核心验收证据依然缺失
 
 ---
 
 ## 九、交接建议
 
-建议下一步在**网络通畅且具备 GitHub 写权限**的环境中继续：
+建议下一步在**已登录 GitHub 且具备仓库操作权限**的浏览器会话中继续：
 
-```bash
-git push origin master
-```
-
-推送成功后：
-
-1. 在 GitHub 仓库页面手动触发 `.github/workflows/benchmark-linux.yml`
-2. 获取 `ubuntu-latest` 上的 benchmark 输出
-3. 再据此判断 `Task 5.2` 是否通过
+1. 打开仓库 Actions 页面并进入 `benchmark-linux.yml`
+2. 点击 `Run workflow`
+3. 选择 `master` 分支并触发运行
+4. 获取 `ubuntu-latest` 上的 benchmark 输出
+5. 再据此判断 `Task 5.2` 是否通过
