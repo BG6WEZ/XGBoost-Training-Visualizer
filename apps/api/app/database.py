@@ -7,27 +7,17 @@ from app.config import settings
 DATABASE_URL = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 
 # Connection pool optimization (M7-T101)
-# In CI environment (GitHub Actions), use smaller pool sizes to avoid connection exhaustion
-# In production, use larger pools for better throughput
-IS_CI_ENV = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
-
-def _get_pool_config():
-    """Get database pool configuration based on environment."""
-    if IS_CI_ENV:
-        return {"pool_size": 5, "max_overflow": 2}
-    else:
-        return {"pool_size": 10, "max_overflow": 5}
-
-_pool_config = _get_pool_config()
-
+# Key insight: pool_pre_ping=True adds a "SELECT 1" before every query,
+# which significantly impacts latency under high concurrency.
+# We disable pool_pre_ping for lower latency, relying on pool_recycle for stale connections.
 engine = create_async_engine(
     DATABASE_URL,
     echo=settings.DEBUG,
-    pool_size=_pool_config["pool_size"],
-    max_overflow=_pool_config["max_overflow"],
-    pool_timeout=5,
-    pool_recycle=1800,
-    pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=10,
+    pool_timeout=10,
+    pool_recycle=3600,
+    pool_pre_ping=False,
 )
 async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
