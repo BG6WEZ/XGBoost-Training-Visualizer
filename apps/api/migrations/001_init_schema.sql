@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS datasets (
     -- 聚合统计（由文件成员汇总）
     total_row_count INTEGER DEFAULT 0,
     total_column_count INTEGER DEFAULT 0,
-    total_file_size INTEGER DEFAULT 0,
+    total_file_size BIGINT DEFAULT 0,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS dataset_files (
     -- 文件信息
     file_path VARCHAR(500) NOT NULL,
     file_name VARCHAR(255) NOT NULL,
-    file_size INTEGER DEFAULT 0,
+    file_size BIGINT DEFAULT 0,
 
     -- 文件角色: primary, supplementary, metadata
     role VARCHAR(50) DEFAULT 'primary',
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS models (
     storage_type VARCHAR(20) DEFAULT 'local',  -- local, minio
     object_key VARCHAR(500),  -- 可为空，用于历史数据兼容
     format VARCHAR(20) NOT NULL,  -- json, ubj
-    file_size INTEGER,
+    file_size BIGINT,
 
     -- 兼容旧字段（已弃用，保留用于迁移）
     file_path VARCHAR(500),

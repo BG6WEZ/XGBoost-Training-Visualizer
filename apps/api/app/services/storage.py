@@ -103,8 +103,11 @@ class LocalStorageAdapter(StorageAdapter):
         logger.info(f"LocalStorageAdapter initialized with base_path: {self.base_path}")
 
     def _get_full_path(self, object_key: str) -> str:
-        """获取完整路径"""
-        return os.path.join(self.base_path, object_key)
+        """获取完整路径，防止路径穿越攻击"""
+        full_path = os.path.normpath(os.path.join(self.base_path, object_key))
+        if not os.path.commonpath([full_path, self.base_path]) == self.base_path:
+            raise ValueError(f"Path traversal detected: {object_key}")
+        return full_path
 
     async def save(self, object_key: str, data: bytes, content_type: str = "application/octet-stream") -> FileInfo:
         """保存文件"""
@@ -497,6 +500,52 @@ class StorageService:
         object_key = f"feature_engineering/{dataset_id}/{task_id}/{filename}"
         return await self.adapter.save(object_key, data, "text/csv")
 
+    async def save_prediction_data(
+        self,
+        experiment_id: str,
+        data: bytes,
+        filename: str = "predictions.json"
+    ) -> FileInfo:
+        """
+        保存预测数据（用于结果分析）
+        
+        Args:
+            experiment_id: 实验 ID
+            data: 预测数据（JSON 格式）
+            filename: 文件名
+            
+        Returns:
+            文件信息
+        """
+        object_key = f"predictions/{experiment_id}/{filename}"
+        return await self.adapter.save(object_key, data, "application/json")
+
+    async def get_prediction_data(self, experiment_id: str) -> bytes:
+        """
+        读取预测数据
+        
+        Args:
+            experiment_id: 实验 ID
+            
+        Returns:
+            预测数据（JSON 格式）
+        """
+        object_key = f"predictions/{experiment_id}/predictions.json"
+        return await self.adapter.read(object_key)
+
+    async def prediction_data_exists(self, experiment_id: str) -> bool:
+        """
+        检查预测数据是否存在
+        
+        Args:
+            experiment_id: 实验 ID
+            
+        Returns:
+            是否存在
+        """
+        object_key = f"predictions/{experiment_id}/predictions.json"
+        return await self.adapter.exists(object_key)
+
     async def health_check(self) -> Tuple[bool, str]:
         """健康检查"""
         return await self.adapter.health_check()
@@ -521,6 +570,55 @@ def get_storage_service() -> StorageService:
     if _storage_service is None:
         raise RuntimeError("Storage service not initialized. Call init_storage_service first.")
     return _storage_service
+
+
+async def count_lines_async(file_path: str) -> int:
+    """
+    使用 aiofiles 异步计数文件行数。
+    按块读取（1MB chunks），统计换行符数量，避免逐行 async 调用开销。
+    """
+    count = 0
+    chunk_size = 1024 * 1024  # 1MB
+    async with aiofiles.open(file_path, 'rb') as f:
+        while True:
+            chunk = await f.read(chunk_size)
+            if not chunk:
+                break
+            count += chunk.count(b'\n')
+    return count
+
+
+async def estimate_line_count(file_path: str, sample_lines: int = 10000) -> int:
+    """
+    通过采样估算文件行数。
+    策略：读前 sample_lines 行，计算平均行长度，用文件大小 / 平均行长度推算
+    精度：±10% 可接受
+    """
+    file_size = os.path.getsize(file_path)
+    bytes_read = 0
+    lines_sampled = 0
+
+    async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+        async for line in f:
+            bytes_read += len(line.encode('utf-8'))
+            lines_sampled += 1
+            if lines_sampled >= sample_lines:
+                break
+
+    if lines_sampled == 0:
+        return 0
+
+    avg_line_size = bytes_read / lines_sampled
+    estimated_lines = int(file_size / avg_line_size)
+
+    logger.info(
+        f"估算行数：采样 {lines_sampled} 行，"
+        f"平均行大小 {avg_line_size:.2f} bytes，"
+        f"文件总大小 {file_size} bytes，"
+        f"估算总行数 {estimated_lines}"
+    )
+
+    return estimated_lines
 
 
 async def init_storage_service(config: Optional[StorageConfig] = None) -> StorageService:

@@ -254,6 +254,32 @@ VITE_API_URL=http://localhost:8000
 
 ## 测试
 
+### 主门禁（一键执行）
+
+项目提供统一的主门禁脚本，可一键执行所有核心测试：
+
+```bash
+# Windows
+scripts\main-gate.bat
+
+# Unix/Linux/macOS
+./scripts/main-gate.sh
+```
+
+**主门禁包含**：
+1. API 测试 (pytest)
+2. Worker 测试 (pytest)
+3. 前端 TypeScript 检查
+4. 前端构建
+
+### CI 自动化
+
+项目已配置 GitHub Actions CI workflow (`.github/workflows/main-gate.yml`)，在 push 和 PR 时自动执行主门禁测试。
+
+**CI 触发条件**：
+- push 到 `main` 或 `master` 分支
+- Pull Request 到 `main` 或 `master` 分支
+
 ### 使用项目虚拟环境
 
 项目使用 `.venv` 作为 Python 虚拟环境。**推荐使用 `.venv` 执行测试**，确保环境一致性。
@@ -421,6 +447,50 @@ Worker 状态通过 `/api/training/status` 端点获取：
 | 核心测试 | test_workspace_consistency.py | 核心依赖 | 必须 |
 | 核心测试 | test_data_quality.py (CSV) | 核心依赖 | 必须 |
 | 扩展测试 | test_data_quality.py (Parquet) | pyarrow | 可选 |
+
+### Skip 测试说明
+
+部分测试因环境依赖被跳过（skip），这是已声明的边界：
+
+| 测试文件 | Skip 数量 | 原因 |
+|----------|-----------|------|
+| test_queue.py | 5 | Redis 不可用 - 集成测试需要运行中的 Redis 服务 |
+| test_training_real_concurrency_e2e.py | 4 | Redis 不可用 - 真实并发 E2E 测试需要 Redis |
+
+**总计**: 9 skipped
+
+这些 skip 不计入"通过"结论，需要在有 Redis 的环境中执行。
+
+### 浏览器冒烟测试
+
+浏览器冒烟测试需要完整环境运行：
+
+```bash
+# 前置条件：启动所有服务
+pnpm docker:dev    # PostgreSQL + Redis
+pnpm dev:api       # API 服务
+pnpm dev:worker    # Worker 服务
+pnpm dev:web       # 前端服务
+
+# 执行冒烟测试
+node smoke-test.mjs
+# 或
+node test-playwright.mjs
+```
+
+**冒烟测试覆盖**：
+1. 登录页面可访问
+2. 管理员登录成功
+3. 管理员用户页可访问
+4. 数据集页可访问
+5. 实验页可访问
+
+### 构建警告说明
+
+前端构建有 chunk size warning (733.77 kB > 500 kB)，不阻塞构建，但建议后续优化：
+
+- 使用动态 import() 进行代码分割
+- 配置 build.rollupOptions.output.manualChunks
 
 ## Workspace 目录说明
 

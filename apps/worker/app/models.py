@@ -108,6 +108,7 @@ class Experiment(Base):
     logs = relationship("TrainingLog", back_populates="experiment", cascade="all, delete-orphan")
     model = relationship("Model", back_populates="experiment", uselist=False)
     feature_importance = relationship("FeatureImportance", back_populates="experiment", cascade="all, delete-orphan")
+    versions = relationship("ModelVersion", back_populates="experiment", cascade="all, delete-orphan")
 
 
 class TrainingMetric(Base):
@@ -192,3 +193,27 @@ class AsyncTask(Base):
     finished_at = Column(DateTime, nullable=True)
 
     dataset = relationship("Dataset")
+
+
+class ModelVersion(Base):
+    """模型版本管理 - P1-T13"""
+    __tablename__ = "model_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    experiment_id = Column(UUID(as_uuid=True), ForeignKey("experiments.id", ondelete="CASCADE"), nullable=False)
+    
+    version_number = Column(String(20), nullable=False)
+    
+    config_snapshot = Column(JSON, nullable=False)
+    metrics_snapshot = Column(JSON, nullable=False)
+    
+    tags = Column(JSON, nullable=True, default=list)
+    
+    is_active = Column(Integer, default=1)
+    
+    source_model_id = Column(UUID(as_uuid=True), ForeignKey("models.id", ondelete="SET NULL"), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    experiment = relationship("Experiment", back_populates="versions")
+    source_model = relationship("Model")

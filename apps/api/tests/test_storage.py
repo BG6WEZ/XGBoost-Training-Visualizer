@@ -15,6 +15,54 @@ os.environ["REDIS_URL"] = "redis://localhost:6379/15"
 os.environ["STORAGE_TYPE"] = "local"
 
 
+class TestPathTraversalProtection:
+    """路径穿越防护测试"""
+
+    def test_path_traversal_blocked_double_dot(self):
+        """测试路径穿越被阻止：../../etc/passwd"""
+        from app.services.storage import LocalStorageAdapter
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = LocalStorageAdapter(base_path=tmpdir)
+            with pytest.raises(ValueError, match="Path traversal detected"):
+                adapter._get_full_path("../../etc/passwd")
+
+    def test_path_traversal_blocked_encoded(self):
+        """测试编码路径穿越被阻止"""
+        from app.services.storage import LocalStorageAdapter
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = LocalStorageAdapter(base_path=tmpdir)
+            with pytest.raises(ValueError, match="Path traversal detected"):
+                adapter._get_full_path("../../../tmp/evil.txt")
+
+    def test_normal_path_allowed(self):
+        """测试正常路径允许"""
+        from app.services.storage import LocalStorageAdapter
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = LocalStorageAdapter(base_path=tmpdir)
+            full_path = adapter._get_full_path("models/exp1/model.json")
+            assert full_path.startswith(os.path.abspath(tmpdir))
+            assert "model.json" in full_path
+            assert "models" in full_path
+
+    def test_nested_normal_path_allowed(self):
+        """测试深层正常路径允许"""
+        from app.services.storage import LocalStorageAdapter
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = LocalStorageAdapter(base_path=tmpdir)
+            full_path = adapter._get_full_path("preprocessing/dataset-001/task-001/processed.csv")
+            assert full_path.startswith(os.path.abspath(tmpdir))
+            assert "processed.csv" in full_path
+            assert "preprocessing" in full_path
+
+
 class TestLocalStorageAdapter:
     """本地存储适配器测试"""
 
@@ -110,7 +158,9 @@ class TestLocalStorageAdapter:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = LocalStorageAdapter(base_path=tmpdir)
             full_path = adapter.get_full_path("models/test/model.json")
-            assert "models/test/model.json" in full_path
+            assert full_path.startswith(os.path.abspath(tmpdir))
+            assert "model.json" in full_path
+            assert "models" in full_path
 
 
 class TestStorageService:

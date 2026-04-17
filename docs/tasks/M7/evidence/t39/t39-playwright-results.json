@@ -1,0 +1,361 @@
+{
+  "webBaseUrl": "http://127.0.0.1:3000",
+  "apiBaseUrl": "http://127.0.0.1:8000",
+  "createdUser": {
+    "username": "t39_user_1775725817917",
+    "initialPassword": "T39User123!",
+    "resetPassword": "T39Reset456!"
+  },
+  "screenshots": [
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\01-admin-home.png",
+      "note": "管理员登录后首页"
+    },
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\02-admin-users-page.png",
+      "note": "管理员通过导航进入 /admin/users 页面"
+    },
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\03-create-user-modal.png",
+      "note": "创建用户弹窗已填写表单"
+    },
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\04-user-created-row.png",
+      "note": "创建用户后列表出现新用户"
+    },
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\05-normal-user-blocked.png",
+      "note": "普通用户访问 /admin/users 被前端权限提示拦截"
+    },
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\06-user-disabled-row.png",
+      "note": "禁用用户后列表状态更新为禁用"
+    },
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\07-reset-password-modal.png",
+      "note": "重置密码弹窗已填写新密码"
+    },
+    {
+      "filePath": "C:\\Users\\wangd\\project\\XGBoost Training Visualizer\\docs\\tasks\\M7\\evidence\\t39\\08-reset-password-complete.png",
+      "note": "重置密码请求成功后弹窗关闭"
+    }
+  ],
+  "apiCalls": [
+    {
+      "url": "http://localhost:8000/api/auth/login",
+      "method": "POST",
+      "status": 200,
+      "body": {
+        "access_token": "eyJzdWIiOiAiODkwNDFiMTgtNjAwNS00M2EyLWIyZWMtMTQ2Y2YxY2I1N2VhIiwgImlhdCI6ICIyMDI2LTA0LTA5VDA5OjEwOjIwLjM1OTQ5NyIsICJleHAiOiAiMjAyNi0wNC0xMFQwOToxMDoyMC4zNTk1MDgifQ==.ca4e57f3ad63f7f94d590174738b379e",
+        "token_type": "bearer",
+        "user": {
+          "id": "89041b18-6005-43a2-b2ec-146cf1cb57ea",
+          "username": "admin",
+          "role": "admin",
+          "status": "active",
+          "created_at": "2026-04-09T09:08:10.623031",
+          "last_login_at": "2026-04-09T09:10:20.349779"
+        }
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/datasets/",
+      "method": "GET",
+      "status": 200,
+      "body": []
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "users": [
+          {
+            "id": "a9d98b6a-3b1c-42e2-9784-364e3376fad2",
+            "username": "t39_user_1775725727364",
+            "role": "user",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:51.514631",
+            "last_login_at": null
+          },
+          {
+            "id": "89041b18-6005-43a2-b2ec-146cf1cb57ea",
+            "username": "admin",
+            "role": "admin",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:10.623031",
+            "last_login_at": "2026-04-09T09:10:20.349779"
+          }
+        ],
+        "total": 2
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users",
+      "method": "POST",
+      "status": 200,
+      "body": {
+        "id": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+        "username": "t39_user_1775725817917",
+        "role": "user",
+        "status": "active",
+        "created_at": "2026-04-09T09:10:20.724026",
+        "last_login_at": null
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "users": [
+          {
+            "id": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+            "username": "t39_user_1775725817917",
+            "role": "user",
+            "status": "active",
+            "created_at": "2026-04-09T09:10:20.724026",
+            "last_login_at": null
+          },
+          {
+            "id": "a9d98b6a-3b1c-42e2-9784-364e3376fad2",
+            "username": "t39_user_1775725727364",
+            "role": "user",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:51.514631",
+            "last_login_at": null
+          },
+          {
+            "id": "89041b18-6005-43a2-b2ec-146cf1cb57ea",
+            "username": "admin",
+            "role": "admin",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:10.623031",
+            "last_login_at": "2026-04-09T09:10:20.349779"
+          }
+        ],
+        "total": 3
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/auth/login",
+      "method": "POST",
+      "status": 200,
+      "body": {
+        "access_token": "eyJzdWIiOiAiZjlmYjlmMTItNGJmZS00NDcxLWFiN2QtNzc0NzQwYzQwOGEwIiwgImlhdCI6ICIyMDI2LTA0LTA5VDA5OjEwOjIxLjUzNDkyNyIsICJleHAiOiAiMjAyNi0wNC0xMFQwOToxMDoyMS41MzQ5MzkifQ==.9e2f54abee3f5d52e2730feeb54ba449",
+        "token_type": "bearer",
+        "user": {
+          "id": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+          "username": "t39_user_1775725817917",
+          "role": "user",
+          "status": "active",
+          "created_at": "2026-04-09T09:10:20.724026",
+          "last_login_at": "2026-04-09T09:10:21.527693"
+        }
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/datasets/",
+      "method": "GET",
+      "status": 200,
+      "body": null
+    },
+    {
+      "url": "http://localhost:8000/api/auth/login",
+      "method": "POST",
+      "status": 200,
+      "body": {
+        "access_token": "eyJzdWIiOiAiODkwNDFiMTgtNjAwNS00M2EyLWIyZWMtMTQ2Y2YxY2I1N2VhIiwgImlhdCI6ICIyMDI2LTA0LTA5VDA5OjEwOjIyLjg2NDgzOSIsICJleHAiOiAiMjAyNi0wNC0xMFQwOToxMDoyMi44NjQ4NDcifQ==.1da7668096a3b4d8fb3af650af224790",
+        "token_type": "bearer",
+        "user": {
+          "id": "89041b18-6005-43a2-b2ec-146cf1cb57ea",
+          "username": "admin",
+          "role": "admin",
+          "status": "active",
+          "created_at": "2026-04-09T09:08:10.623031",
+          "last_login_at": "2026-04-09T09:10:22.855771"
+        }
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/datasets/",
+      "method": "GET",
+      "status": 200,
+      "body": null
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "users": [
+          {
+            "id": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+            "username": "t39_user_1775725817917",
+            "role": "user",
+            "status": "active",
+            "created_at": "2026-04-09T09:10:20.724026",
+            "last_login_at": "2026-04-09T09:10:21.527693"
+          },
+          {
+            "id": "a9d98b6a-3b1c-42e2-9784-364e3376fad2",
+            "username": "t39_user_1775725727364",
+            "role": "user",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:51.514631",
+            "last_login_at": null
+          },
+          {
+            "id": "89041b18-6005-43a2-b2ec-146cf1cb57ea",
+            "username": "admin",
+            "role": "admin",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:10.623031",
+            "last_login_at": "2026-04-09T09:10:22.855771"
+          }
+        ],
+        "total": 3
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users/f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+      "method": "PATCH",
+      "status": 200,
+      "body": {
+        "id": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+        "username": "t39_user_1775725817917",
+        "role": "user",
+        "status": "disabled",
+        "created_at": "2026-04-09T09:10:20.724026",
+        "last_login_at": "2026-04-09T09:10:21.527693"
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "users": [
+          {
+            "id": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+            "username": "t39_user_1775725817917",
+            "role": "user",
+            "status": "disabled",
+            "created_at": "2026-04-09T09:10:20.724026",
+            "last_login_at": "2026-04-09T09:10:21.527693"
+          },
+          {
+            "id": "a9d98b6a-3b1c-42e2-9784-364e3376fad2",
+            "username": "t39_user_1775725727364",
+            "role": "user",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:51.514631",
+            "last_login_at": null
+          },
+          {
+            "id": "89041b18-6005-43a2-b2ec-146cf1cb57ea",
+            "username": "admin",
+            "role": "admin",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:10.623031",
+            "last_login_at": "2026-04-09T09:10:22.855771"
+          }
+        ],
+        "total": 3
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users/f9fb9f12-4bfe-4471-ab7d-774740c408a0/reset-password",
+      "method": "POST",
+      "status": 200,
+      "body": {
+        "message": "密码重置成功"
+      }
+    },
+    {
+      "url": "http://localhost:8000/api/admin/users",
+      "method": "GET",
+      "status": 200,
+      "body": {
+        "users": [
+          {
+            "id": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+            "username": "t39_user_1775725817917",
+            "role": "user",
+            "status": "disabled",
+            "created_at": "2026-04-09T09:10:20.724026",
+            "last_login_at": "2026-04-09T09:10:21.527693"
+          },
+          {
+            "id": "a9d98b6a-3b1c-42e2-9784-364e3376fad2",
+            "username": "t39_user_1775725727364",
+            "role": "user",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:51.514631",
+            "last_login_at": null
+          },
+          {
+            "id": "89041b18-6005-43a2-b2ec-146cf1cb57ea",
+            "username": "admin",
+            "role": "admin",
+            "status": "active",
+            "created_at": "2026-04-09T09:08:10.623031",
+            "last_login_at": "2026-04-09T09:10:22.855771"
+          }
+        ],
+        "total": 3
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "id": "admin-route-access",
+      "page": "/admin/users",
+      "action": "管理员登录后通过侧边栏进入用户管理页",
+      "result": "页面成功显示用户列表和创建按钮"
+    },
+    {
+      "id": "admin-create-user",
+      "page": "/admin/users",
+      "action": "管理员创建普通用户 t39_user_1775725817917",
+      "input": {
+        "username": "t39_user_1775725817917",
+        "role": "user"
+      },
+      "apiResult": {
+        "status": 200,
+        "username": "t39_user_1775725817917",
+        "role": "user",
+        "userId": "f9fb9f12-4bfe-4471-ab7d-774740c408a0"
+      },
+      "uiResult": "用户列表中出现新建用户行"
+    },
+    {
+      "id": "normal-user-blocked",
+      "page": "/admin/users",
+      "action": "普通用户 t39_user_1775725817917 直接访问管理员页面",
+      "result": "页面显示需要管理员权限才能访问此页面"
+    },
+    {
+      "id": "admin-disable-user",
+      "page": "/admin/users",
+      "action": "管理员禁用用户 t39_user_1775725817917",
+      "apiResult": {
+        "status": 200,
+        "userId": "f9fb9f12-4bfe-4471-ab7d-774740c408a0",
+        "userStatus": "disabled"
+      },
+      "uiResult": "用户列表状态标签变为禁用"
+    },
+    {
+      "id": "admin-reset-password",
+      "page": "/admin/users",
+      "action": "管理员重置用户 t39_user_1775725817917 的密码",
+      "apiResult": {
+        "status": 200,
+        "message": "密码重置成功"
+      },
+      "uiResult": "重置密码弹窗关闭，页面保持可操作"
+    }
+  ]
+}

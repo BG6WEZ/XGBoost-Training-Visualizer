@@ -5,10 +5,10 @@ import os
 
 
 # 项目根目录
-# 本地开发：向上 4 级到达项目根目录：app -> apps -> project root
+# 本地开发：向上 3 级到达项目根目录：app -> apps -> project root
 # Docker 容器：向上 1 级到达项目根目录：/app/app -> /app
 try:
-    PROJECT_ROOT = Path(__file__).resolve().parents[4]
+    PROJECT_ROOT = Path(__file__).resolve().parents[3]
 except IndexError:
     # Docker 容器环境
     PROJECT_ROOT = Path(__file__).resolve().parents[1]

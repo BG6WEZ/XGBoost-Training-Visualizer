@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -6,8 +6,11 @@ from typing import List, Optional
 from pydantic import BaseModel
 import uuid
 import os
+import re
 import pandas as pd
 import json
+import aiofiles
+from datetime import datetime
 
 from app.database import get_db
 from app.models import Dataset, DatasetFile, FileRole
@@ -28,11 +31,158 @@ from app.schemas.dataset import (
     AsyncTaskListResponse,
     SplitRequest,
     SplitResponse,
+    UploadResponse,
+    QualityScoreResponse,
+    QualityDimensionScores,
+    JoinRequest,
+    JoinResult,
 )
 from app.services.queue import QueueService, get_queue_service
 from app.models import AsyncTask
 
 router = APIRouter()
+
+
+ALLOWED_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.parquet'}
+
+
+def _sanitize_upload_filename(filename: str) -> str:
+    """Normalize browser-provided upload filename to a safe local filename."""
+    # Some browsers send relative paths for folder uploads, e.g. data/weather/a.csv.
+    basename = os.path.basename(filename.replace('\\', '/'))
+    sanitized = re.sub(r'[^A-Za-z0-9._-]+', '_', basename).strip('._')
+    return sanitized or f"upload_{uuid.uuid4().hex}.csv"
+
+
+@router.post("/upload", response_model=UploadResponse)
+async def upload_file(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    上传数据文件
+    
+    支持 CSV、Excel、Parquet 格式
+    文件将保存到 WORKSPACE_DIR/uploads 目录
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    original_filename = file.filename
+    safe_filename = _sanitize_upload_filename(original_filename)
+    
+    file_ext = os.path.splitext(safe_filename)[1].lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type '{file_ext}' is not allowed. Allowed types: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    upload_dir = os.path.join(settings.WORKSPACE_DIR, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+
+    max_file_size_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024 if settings.MAX_FILE_SIZE_MB > 0 else None
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_filename = f"{timestamp}_{safe_filename}"
+    file_path = os.path.join(upload_dir, unique_filename)
+    
+    file_size = 0
+    async with aiofiles.open(file_path, 'wb') as f:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            file_size += len(chunk)
+            if max_file_size_bytes is not None and file_size > max_file_size_bytes:
+                await f.close()
+                os.remove(file_path)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File size exceeds maximum allowed size of {settings.MAX_FILE_SIZE_MB}MB"
+                )
+            await f.write(chunk)
+    
+    if file_size == 0:
+        os.remove(file_path)
+        raise HTTPException(status_code=400, detail="Empty file is not allowed")
+    
+    # 根据文件大小选择行计数策略
+    SMALL_THRESHOLD = 10 * 1024 * 1024  # 10MB
+    MEDIUM_THRESHOLD = 100 * 1024 * 1024  # 100MB
+
+    estimated = False
+    row_count = None
+    column_count = None
+    columns_info = None
+
+    try:
+        if file_ext == '.csv':
+            df = pd.read_csv(file_path, nrows=100)
+            column_count = len(df.columns)
+            columns_info = [
+                {
+                    "name": col,
+                    "dtype": str(df[col].dtype),
+                    "is_numeric": pd.api.types.is_numeric_dtype(df[col]),
+                    "is_datetime": pd.api.types.is_datetime64_any_dtype(df[col]),
+                }
+                for col in df.columns
+            ]
+            # 行计数策略：统一使用异步实现
+            if file_size < SMALL_THRESHOLD:
+                from app.services.storage import count_lines_async
+                row_count = await count_lines_async(file_path)
+                if row_count > 0:
+                    row_count -= 1  # 减去表头
+            elif file_size < MEDIUM_THRESHOLD:
+                from app.services.storage import count_lines_async
+                row_count = await count_lines_async(file_path)
+                if row_count > 0:
+                    row_count -= 1  # 减去表头
+            else:
+                from app.services.storage import estimate_line_count
+                row_count = await estimate_line_count(file_path)
+                estimated = True
+        elif file_ext in {'.xlsx', '.xls'}:
+            df = pd.read_excel(file_path, nrows=100)
+            row_count = len(pd.read_excel(file_path))
+            column_count = len(df.columns)
+            columns_info = [
+                {
+                    "name": col,
+                    "dtype": str(df[col].dtype),
+                    "is_numeric": pd.api.types.is_numeric_dtype(df[col]),
+                    "is_datetime": pd.api.types.is_datetime64_any_dtype(df[col]),
+                }
+                for col in df.columns
+            ]
+        elif file_ext == '.parquet':
+            df = pd.read_parquet(file_path)
+            row_count = len(df)
+            column_count = len(df.columns)
+            columns_info = [
+                {
+                    "name": col,
+                    "dtype": str(df[col].dtype),
+                    "is_numeric": pd.api.types.is_numeric_dtype(df[col]),
+                    "is_datetime": pd.api.types.is_datetime64_any_dtype(df[col]),
+                }
+                for col in df.columns
+            ]
+    except Exception:
+        pass
+
+    return UploadResponse(
+        file_path=file_path,
+        file_name=safe_filename,
+        file_size=file_size,
+        row_count=row_count,
+        column_count=column_count,
+        columns_info=columns_info,
+        message="File uploaded successfully",
+        estimated=estimated if file_ext == '.csv' and file_size >= MEDIUM_THRESHOLD else None
+    )
 
 
 def _build_dataset_response(dataset: Dataset) -> dict:
@@ -172,6 +322,92 @@ async def get_dataset(
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     return _build_dataset_response(dataset)
+
+
+@router.get("/{dataset_id}/quality-score", response_model=QualityScoreResponse)
+async def get_dataset_quality_score(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    获取数据集质量评分
+    
+    返回四维评分（完整性、准确性、一致性、分布）和总分
+    """
+    from app.services.data_quality_validator import calculate_quality_score
+    
+    try:
+        dataset_uuid = uuid.UUID(dataset_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid dataset ID format")
+
+    result = await db.execute(
+        select(Dataset)
+        .options(selectinload(Dataset.files))
+        .where(Dataset.id == dataset_uuid)
+    )
+    dataset = result.scalar_one_or_none()
+
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    primary_file = None
+    for f in dataset.files:
+        if f.role == FileRole.primary:
+            primary_file = f
+            break
+    
+    if not primary_file:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "NO_PRIMARY_FILE",
+                "message": "数据集没有主文件，无法进行质量评分"
+            }
+        )
+    
+    if not os.path.exists(primary_file.file_path):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "FILE_NOT_ACCESSIBLE",
+                "message": f"数据文件不可访问: {primary_file.file_path}"
+            }
+        )
+    
+    try:
+        score_result = calculate_quality_score(
+            file_path=primary_file.file_path,
+            target_column=dataset.target_column,
+            time_column=dataset.time_column
+        )
+        
+        return QualityScoreResponse(
+            dataset_id=dataset_id,
+            overall_score=score_result["overall_score"],
+            dimension_scores=QualityDimensionScores(
+                completeness=score_result["dimension_scores"]["completeness"],
+                accuracy=score_result["dimension_scores"]["accuracy"],
+                consistency=score_result["dimension_scores"]["consistency"],
+                distribution=score_result["dimension_scores"]["distribution"]
+            ),
+            errors=score_result["errors"],
+            warnings=score_result["warnings"],
+            recommendations=score_result["recommendations"],
+            stats=score_result["stats"],
+            evaluated_at=score_result["evaluated_at"],
+            weights=score_result["weights"]
+        )
+    except Exception as e:
+        import logging
+        logging.error(f"质量评分计算失败: dataset_id={dataset_id}, error={str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "QUALITY_SCORE_ERROR",
+                "message": f"质量评分计算失败: {str(e)}"
+            }
+        )
 
 
 @router.patch("/{dataset_id}", response_model=DatasetResponse)
@@ -544,6 +780,8 @@ async def preprocess_dataset(
     task_config = {
         "dataset_path": primary_file.file_path,
         "missing_value_strategy": request.config.missing_value_strategy,
+        "encoding_strategy": request.config.encoding_strategy,
+        "target_columns": request.config.target_columns,
         "remove_duplicates": request.config.remove_duplicates,
         "handle_outliers": request.config.handle_outliers,
         "output_path": request.config.output_path,
@@ -936,3 +1174,133 @@ async def split_dataset(
         subsets=response_subsets,
         split_config=split_config
     )
+
+
+# ========== Data Join Interface ==========
+
+
+@router.post("/{dataset_id}/join", response_model=JoinResult)
+async def join_dataset(
+    dataset_id: str,
+    request: JoinRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    多表级联Join
+    
+    将主数据集与多个从表进行Join操作，支持多种Join类型：
+    - left: 左连接，保留主表所有行
+    - inner: 内连接，只保留匹配的行
+    - right: 右连接，保留从表所有行
+    - outer: 外连接，保留所有行
+    
+    自动处理：
+    - 编码问题（UTF-8, GBK, Latin-1等）
+    - 列重名问题（自动重命名）
+    - 行数变化统计
+    """
+    from app.services.data_fusion import execute_data_join, DataFusionError
+    
+    try:
+        dataset_uuid = uuid.UUID(dataset_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid dataset ID format")
+    
+    # 获取数据集
+    result = await db.execute(
+        select(Dataset)
+        .options(selectinload(Dataset.files))
+        .where(Dataset.id == dataset_uuid)
+    )
+    dataset = result.scalar_one_or_none()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # 获取主文件
+    primary_file = next(
+        (f for f in dataset.files if f.role == FileRole.primary.value),
+        dataset.files[0] if dataset.files else None
+    )
+    
+    if not primary_file:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "NO_PRIMARY_FILE",
+                "message": "数据集没有主文件，无法执行Join操作"
+            }
+        )
+    
+    # 执行Join
+    output_dir = os.path.join(settings.WORKSPACE_DIR, "joined")
+    
+    try:
+        join_result = execute_data_join(
+            main_file_path=primary_file.file_path,
+            main_join_key=request.main_join_key,
+            join_tables=request.join_tables,
+            output_dir=output_dir
+        )
+        
+        return JoinResult(
+            success=join_result["success"],
+            before_rows=join_result["before_rows"],
+            after_rows=join_result["after_rows"],
+            rows_lost=join_result["rows_lost"],
+            rows_added_columns=join_result["rows_added_columns"],
+            message=join_result["message"],
+            joined_columns=join_result["joined_columns"],
+            output_file_path=join_result["output_file_path"]
+        )
+        
+    except DataFusionError as e:
+        # 根据错误类型返回不同的HTTP状态码
+        error_code = e.error_code
+        
+        if error_code == "MAIN_JOIN_KEY_NOT_FOUND":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error_code": error_code,
+                    "message": e.message,
+                    "details": e.details
+                }
+            )
+        elif error_code in ["JOIN_TABLE_FILE_NOT_FOUND", "JOIN_TABLE_KEY_NOT_FOUND"]:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error_code": error_code,
+                    "message": e.message,
+                    "details": e.details
+                }
+            )
+        elif error_code == "MAIN_FILE_NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error_code": error_code,
+                    "message": e.message,
+                    "details": e.details
+                }
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": error_code,
+                    "message": e.message,
+                    "details": e.details
+                }
+            )
+    except Exception as e:
+        import logging
+        logging.error(f"Join操作失败: dataset_id={dataset_id}, error={str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "JOIN_ERROR",
+                "message": f"Join操作失败: {str(e)}"
+            }
+        )

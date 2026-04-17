@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Integer, Float, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, String, Text, Integer, BigInteger, Float, DateTime, ForeignKey, JSON, UniqueConstraint, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -6,6 +6,18 @@ import uuid
 import enum
 
 from app.database import Base
+
+
+class UserRole(str, enum.Enum):
+    """用户角色"""
+    admin = "admin"
+    user = "user"
+
+
+class UserStatus(str, enum.Enum):
+    """用户状态"""
+    active = "active"
+    disabled = "disabled"
 
 
 class ExperimentStatus(str, enum.Enum):
@@ -44,7 +56,7 @@ class Dataset(Base):
     # 聚合统计（由文件成员汇总）
     total_row_count = Column(Integer, default=0)
     total_column_count = Column(Integer, default=0)
-    total_file_size = Column(Integer, default=0)
+    total_file_size = Column(BigInteger, default=0)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -67,7 +79,7 @@ class DatasetFile(Base):
     # 文件信息
     file_path = Column(String(500), nullable=False)
     file_name = Column(String(255), nullable=False)
-    file_size = Column(Integer, default=0)
+    file_size = Column(BigInteger, default=0)
 
     # 文件角色
     role = Column(String(50), default=FileRole.primary.value)
@@ -124,6 +136,9 @@ class Experiment(Base):
     # 训练配置
     config = Column(JSON, nullable=False)
 
+    # 标签（P1-T12）
+    tags = Column(JSON, nullable=True, default=list)
+
     # 状态
     status = Column(String(50), default=ExperimentStatus.pending.value)
     error_message = Column(Text, nullable=True)
@@ -140,6 +155,7 @@ class Experiment(Base):
     logs = relationship("TrainingLog", back_populates="experiment", cascade="all, delete-orphan")
     model = relationship("Model", back_populates="experiment", uselist=False)
     feature_importance = relationship("FeatureImportance", back_populates="experiment", cascade="all, delete-orphan")
+    versions = relationship("ModelVersion", back_populates="experiment", cascade="all, delete-orphan")
 
 
 class TrainingMetric(Base):
@@ -187,7 +203,7 @@ class Model(Base):
     storage_type = Column(String(20), default="local")  # local, minio
     object_key = Column(String(500), nullable=True)  # 存储对象键/相对路径，nullable=True 用于历史数据兼容
     format = Column(String(20), nullable=False)  # json, ubj
-    file_size = Column(Integer, nullable=True)
+    file_size = Column(BigInteger, nullable=True)
 
     # 兼容旧字段（可选）
     file_path = Column(String(500), nullable=True)  # 已弃用，保留用于迁移
@@ -199,6 +215,7 @@ class Model(Base):
 
     # Relationships
     experiment = relationship("Experiment", back_populates="model")
+    versions = relationship("ModelVersion", back_populates="source_model")
 
 
 class FeatureImportance(Base):
@@ -214,6 +231,46 @@ class FeatureImportance(Base):
 
     # Relationships
     experiment = relationship("Experiment", back_populates="feature_importance")
+
+
+class ModelVersion(Base):
+    """模型版本管理 - P1-T13
+    
+    训练完成后自动创建版本快照，支持版本追踪、比较和回滚
+    """
+    __tablename__ = "model_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    experiment_id = Column(UUID(as_uuid=True), ForeignKey("experiments.id", ondelete="CASCADE"), nullable=False)
+    
+    # 版本号（v1.0.0 风格）
+    version_number = Column(String(20), nullable=False)
+    
+    # 配置快照（训练时的完整配置）
+    config_snapshot = Column(JSON, nullable=False)
+    
+    # 指标快照（训练结果的核心指标）
+    metrics_snapshot = Column(JSON, nullable=False)
+    
+    # 版本标签（如 "生产环境"、"最佳模型"）
+    tags = Column(JSON, nullable=True, default=list)
+    
+    # 是否为当前激活版本（每个实验只能有一个激活版本）
+    is_active = Column(Integer, default=1)  # 1=active, 0=inactive
+    
+    # 模型存储引用（指向 Model 表的 object_key）
+    source_model_id = Column(UUID(as_uuid=True), ForeignKey("models.id", ondelete="SET NULL"), nullable=True)
+    
+    # 创建时间
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    experiment = relationship("Experiment", back_populates="versions")
+    source_model = relationship("Model", back_populates="versions")
+    
+    __table_args__ = (
+        UniqueConstraint("experiment_id", "version_number", name="uq_experiment_version"),
+    )
 
 
 class AsyncTask(Base):
@@ -241,3 +298,23 @@ class AsyncTask(Base):
 
     # Relationships
     dataset = relationship("Dataset")
+
+
+class User(Base):
+    """用户模型 - P1-T15 简化登录与用户管理"""
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(20), default=UserRole.user.value)
+    status = Column(String(20), default=UserStatus.active.value)
+    must_change_password = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_user_username"),
+    )

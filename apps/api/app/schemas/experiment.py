@@ -64,6 +64,7 @@ class ExperimentCreate(BaseModel):
     dataset_id: str
     subset_id: Optional[str] = None
     config: TrainingConfig
+    tags: Optional[List[str]] = Field(default=None, description="实验标签列表")
 
 
 class ExperimentUpdate(BaseModel):
@@ -71,6 +72,7 @@ class ExperimentUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     config: Optional[TrainingConfig] = None
+    tags: Optional[List[str]] = Field(None, description="实验标签列表")
 
 
 class ExperimentResponse(BaseModel):
@@ -81,6 +83,7 @@ class ExperimentResponse(BaseModel):
     dataset_id: str
     subset_id: Optional[str]
     config: Dict[str, Any]
+    tags: Optional[List[str]] = Field(default=None, description="实验标签列表")
     status: str
     error_message: Optional[str]
     created_at: datetime
@@ -98,8 +101,100 @@ class ExperimentListResponse(BaseModel):
     name: str
     description: Optional[str]
     dataset_id: str
+    tags: Optional[List[str]] = Field(default=None, description="实验标签列表")
     status: str
     created_at: datetime
+    queue_position: Optional[int] = None
 
     class Config:
         from_attributes = True
+
+
+class ExperimentFilterParams(BaseModel):
+    """实验筛选参数"""
+    status: Optional[str] = None
+    tags: Optional[List[str]] = None
+    tag_match_mode: str = Field(default="any", description="标签匹配模式: any 或 all")
+    created_after: Optional[datetime] = None
+    created_before: Optional[datetime] = None
+    name_contains: Optional[str] = None
+    skip: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class QueueStatsResponse(BaseModel):
+    """队列统计响应"""
+    running_count: int
+    queued_count: int
+    max_concurrency: int
+    available_slots: int
+    running_experiments: List[str] = []
+    queue_positions: Dict[str, int] = {}
+
+
+class ExperimentWithQueueResponse(BaseModel):
+    """带队列信息的实验响应"""
+    id: str
+    name: str
+    description: Optional[str]
+    dataset_id: str
+    subset_id: Optional[str]
+    config: Dict[str, Any]
+    tags: Optional[List[str]] = Field(default=None, description="实验标签列表")
+    status: str
+    error_message: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    queue_position: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ParamTemplateItem(BaseModel):
+    """单个参数模板"""
+    learning_rate: float
+    max_depth: int
+    n_estimators: int
+    subsample: float
+    colsample_bytree: float
+    early_stopping_rounds: int
+    description: str
+
+
+class ParamTemplatesResponse(BaseModel):
+    """参数模板响应"""
+    templates: Dict[str, ParamTemplateItem]
+
+
+PARAM_TEMPLATES: Dict[str, ParamTemplateItem] = {
+    "conservative": ParamTemplateItem(
+        learning_rate=0.01,
+        max_depth=3,
+        n_estimators=500,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        early_stopping_rounds=20,
+        description="适合小数据、防过拟合"
+    ),
+    "balanced": ParamTemplateItem(
+        learning_rate=0.1,
+        max_depth=6,
+        n_estimators=100,
+        subsample=1.0,
+        colsample_bytree=1.0,
+        early_stopping_rounds=10,
+        description="通用默认值"
+    ),
+    "aggressive": ParamTemplateItem(
+        learning_rate=0.3,
+        max_depth=9,
+        n_estimators=50,
+        subsample=1.0,
+        colsample_bytree=1.0,
+        early_stopping_rounds=5,
+        description="快速探索"
+    )
+}

@@ -1,6 +1,7 @@
 # FastAPI 核心
 fastapi==0.110.0
 uvicorn[standard]==0.27.1
+uvloop==0.19.0
 python-multipart==0.0.9
 
 # 数据库

@@ -16,10 +16,13 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua
 
 # 复制应用代码到 /app/app（保持与本地开发一致的路径结构）
 COPY app/ /app/app/
+COPY alembic.ini /app/
+COPY alembic/ /app/alembic/
 COPY migrations/ /app/migrations/
+COPY scripts/ /app/scripts/
 
 # 创建非 root 用户
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app && mkdir -p /app/workspace/uploads && chown -R appuser:appuser /app/workspace
 USER appuser
 
 EXPOSE 8000
@@ -27,4 +30,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--loop", "uvloop"]

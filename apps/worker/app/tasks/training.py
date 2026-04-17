@@ -61,9 +61,45 @@ class XGBoostTrainer:
 
         logger.info(f"Using target column: {target_column}")
 
+        if target_column not in df.columns:
+            raise ValueError(
+                f"Target column '{target_column}' not found in dataset columns: {list(df.columns)}"
+            )
+
         # 分离特征和目标
         X = df.drop(columns=[target_column])
-        y = df[target_column]
+        y_raw = df[target_column]
+        y = pd.to_numeric(y_raw, errors='coerce')
+
+        # 训练前强校验标签列，避免触发底层 XGBoost 报错且无法定位。
+        y_values = y.to_numpy(dtype='float64')
+        nan_count = int(np.isnan(y_values).sum())
+        inf_count = int(np.isinf(y_values).sum())
+        finite_mask = np.isfinite(y_values)
+        too_large_count = int(((np.abs(y_values) > np.finfo(np.float32).max) & finite_mask).sum())
+
+        invalid_mask = np.isnan(y_values) | np.isinf(y_values) | (
+            (np.abs(y_values) > np.finfo(np.float32).max) & finite_mask
+        )
+        invalid_count = int(invalid_mask.sum())
+
+        if invalid_count > 0:
+            invalid_indices = np.where(invalid_mask)[0][:5]
+            sample_values = [
+                {
+                    "row_index": int(idx),
+                    "value": str(y_raw.iloc[idx]),
+                }
+                for idx in invalid_indices
+            ]
+            raise ValueError(
+                f"Invalid target values in column '{target_column}': "
+                f"nan={nan_count}, inf={inf_count}, too_large={too_large_count}, "
+                f"invalid_total={invalid_count}, samples={sample_values}. "
+                "Please clean target column values via preprocessing or choose a valid target column."
+            )
+
+        y = pd.Series(y_values, index=df.index, name=target_column)
 
         # 处理非数值列
         for col in X.select_dtypes(include=['object']).columns:
@@ -119,31 +155,21 @@ class XGBoostTrainer:
         dval = xgb.DMatrix(X_val, label=y_val)
 
         evals_result = {}
-        best_iteration = 0
-        best_val_loss = float('inf')
-        trainer_self = self  # 用于闭包
+        early_stopping_rounds = self.config.get('early_stopping_rounds')
+        trainer_self = self
 
-        # 训练回调（XGBoost 3.x 兼容）
         class ProgressCallback(xgb.callback.TrainingCallback):
             def __init__(self):
                 super().__init__()
-                self.best_iteration = 0
-                self.best_val_loss = float('inf')
 
             def after_iteration(self, model, epoch, evals_log):
                 if trainer_self.is_stopped:
-                    return True  # 停止训练
+                    return True
 
-                # 获取指标
                 if evals_log and 'train' in evals_log and 'val' in evals_log:
                     train_rmse = evals_log['train']['rmse'][-1] if evals_log['train']['rmse'] else None
                     val_rmse = evals_log['val']['rmse'][-1] if evals_log['val']['rmse'] else None
 
-                    if val_rmse is not None and val_rmse < self.best_val_loss:
-                        self.best_val_loss = val_rmse
-                        self.best_iteration = epoch
-
-                    # 存储指标
                     if train_rmse is not None and val_rmse is not None:
                         trainer_self.metrics.append({
                             'iteration': epoch + 1,
@@ -155,21 +181,27 @@ class XGBoostTrainer:
 
         progress_callback = ProgressCallback()
 
-        # 执行训练
         logger.info(f"Starting XGBoost training with {n_estimators} iterations")
+        if early_stopping_rounds and early_stopping_rounds > 0:
+            logger.info(f"Early stopping enabled with {early_stopping_rounds} rounds")
 
-        self.model = xgb.train(
-            params,
-            dtrain,
-            num_boost_round=n_estimators,
-            evals=[(dtrain, 'train'), (dval, 'val')],
-            evals_result=evals_result,
-            callbacks=[progress_callback],
-            verbose_eval=False
-        )
+        train_kwargs = {
+            'params': params,
+            'dtrain': dtrain,
+            'num_boost_round': n_estimators,
+            'evals': [(dtrain, 'train'), (dval, 'val')],
+            'evals_result': evals_result,
+            'callbacks': [progress_callback],
+            'verbose_eval': False
+        }
+        
+        if early_stopping_rounds and early_stopping_rounds > 0:
+            train_kwargs['early_stopping_rounds'] = early_stopping_rounds
 
-        best_iteration = progress_callback.best_iteration
-        best_val_loss = progress_callback.best_val_loss
+        self.model = xgb.train(**train_kwargs)
+
+        best_iteration = self.model.best_iteration if hasattr(self.model, 'best_iteration') else n_estimators - 1
+        best_val_loss = evals_result.get('val', {}).get('rmse', [float('inf')])[-1] if evals_result else float('inf')
 
         # 计算最终指标
         y_pred_train = self.model.predict(dtrain)
@@ -183,6 +215,20 @@ class XGBoostTrainer:
             {'feature': k, 'importance': v}
             for k, v in sorted(importance.items(), key=lambda x: x[1], reverse=True)
         ]
+
+        # 保存预测数据（用于结果分析）
+        # 残差定义: residual = actual - predicted
+        self._prediction_data = {
+            'experiment_id': self.experiment_id,
+            'validation': {
+                'actual_values': y_val.tolist() if hasattr(y_val, 'tolist') else list(y_val),
+                'predicted_values': y_pred_val.tolist() if hasattr(y_pred_val, 'tolist') else list(y_pred_val),
+                'residual_values': (
+                    (y_val.values if hasattr(y_val, 'values') else y_val) - y_pred_val
+                ).tolist() if hasattr(y_val, 'values') else (y_val - y_pred_val).tolist(),
+                'sample_count': len(y_val)
+            }
+        }
 
         return {
             'experiment_id': self.experiment_id,
@@ -248,6 +294,8 @@ async def run_training_task(ctx: Dict[str, Any], experiment_id: str, config: Dic
     Returns:
         训练结果
     """
+    from app.storage import get_storage_service
+    
     logger.info(f"Starting training task for experiment {experiment_id}")
 
     try:
@@ -276,6 +324,16 @@ async def run_training_task(ctx: Dict[str, Any], experiment_id: str, config: Dic
         result['model_path'] = model_path
         result['status'] = 'completed'
         result['training_metrics'] = trainer.metrics  # 包含所有训练指标
+
+        # 保存预测数据（用于结果分析）
+        if hasattr(trainer, '_prediction_data') and trainer._prediction_data:
+            try:
+                storage = get_storage_service()
+                prediction_data_bytes = json.dumps(trainer._prediction_data).encode('utf-8')
+                await storage.save_prediction_data(experiment_id, prediction_data_bytes)
+                logger.info(f"Prediction data saved for experiment {experiment_id}")
+            except Exception as e:
+                logger.warning(f"Failed to save prediction data: {e}")
 
         logger.info(f"Training completed for experiment {experiment_id}")
         return result
@@ -320,20 +378,71 @@ async def run_preprocessing_task(ctx: Dict[str, Any], dataset_id: str, config: D
             df = pd.read_parquet(dataset_path)
 
         original_shape = df.shape
+        summary = {
+            "missing_value_handling": {},
+            "encoding": {},
+            "remove_duplicates": {
+                "original_count": len(df),
+                "duplicates_removed": 0
+            },
+            "columns": {
+                "original": list(df.columns),
+                "processed": [],
+                "added": [],
+                "removed": []
+            }
+        }
 
         # 预处理步骤
+        
         # 1. 处理缺失值
-        missing_strategy = config.get('missing_value_strategy', 'mean')
-        if missing_strategy == 'mean':
-            df = df.fillna(df.mean(numeric_only=True))
-        elif missing_strategy == 'median':
-            df = df.fillna(df.median(numeric_only=True))
-        elif missing_strategy == 'drop':
-            df = df.dropna()
+        missing_strategy = config.get('missing_value_strategy', 'mean_fill')
+        target_columns = config.get('target_columns', df.columns.tolist())
+        
+        if missing_strategy == 'forward_fill':
+            # 对所有列执行前向填充
+            for col in target_columns:
+                if col in df.columns:
+                    original_nan = df[col].isna().sum()
+                    if original_nan > 0:
+                        df[col] = df[col].ffill()
+                        summary["missing_value_handling"][col] = {
+                            "strategy": "forward_fill",
+                            "original_nan_count": int(original_nan),
+                            "remaining_nan_count": int(df[col].isna().sum())
+                        }
+        elif missing_strategy == 'mean_fill':
+            # 仅对数值列执行均值填充
+            for col in target_columns:
+                if col in df.columns:
+                    if pd.api.types.is_numeric_dtype(df[col]):
+                        original_nan = df[col].isna().sum()
+                        if original_nan > 0:
+                            df[col] = df[col].fillna(df[col].mean())
+                            summary["missing_value_handling"][col] = {
+                                "strategy": "mean_fill",
+                                "original_nan_count": int(original_nan),
+                                "remaining_nan_count": int(df[col].isna().sum())
+                            }
+                    else:
+                        raise ValueError(f"Cannot apply mean_fill to non-numeric column: {col}")
+        elif missing_strategy == 'drop_rows':
+            # 计算删除的行数
+            original_rows = len(df)
+            df = df.dropna(subset=target_columns)
+            dropped_rows = original_rows - len(df)
+            summary["missing_value_handling"]["drop_rows"] = {
+                "original_row_count": original_rows,
+                "dropped_row_count": dropped_rows,
+                "remaining_row_count": len(df)
+            }
 
         # 2. 处理重复行
         if config.get('remove_duplicates', True):
+            original_count = len(df)
             df = df.drop_duplicates()
+            duplicates_removed = original_count - len(df)
+            summary["remove_duplicates"]["duplicates_removed"] = duplicates_removed
 
         # 3. 异常值处理
         if config.get('handle_outliers', False):
@@ -345,6 +454,52 @@ async def run_preprocessing_task(ctx: Dict[str, Any], dataset_id: str, config: D
                 lower_bound = Q1 - 1.5 * IQR
                 upper_bound = Q3 + 1.5 * IQR
                 df[col] = df[col].clip(lower_bound, upper_bound)
+
+        # 4. 编码策略
+        encoding_strategy = config.get('encoding_strategy')
+        if encoding_strategy:
+            # 自动识别分类列
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+            
+            if target_columns:
+                categorical_cols = [col for col in categorical_cols if col in target_columns]
+            
+            if not categorical_cols:
+                summary["encoding"]["message"] = "No categorical columns found for encoding"
+            else:
+                original_columns = df.columns.tolist()
+                
+                if encoding_strategy == 'one_hot':
+                    # 检查基数
+                    high_cardinality_cols = []
+                    for col in categorical_cols:
+                        if df[col].nunique() > 10:
+                            high_cardinality_cols.append(col)
+                    
+                    if high_cardinality_cols:
+                        raise ValueError(f"High cardinality columns found: {high_cardinality_cols}. Consider using label encoding instead.")
+                    
+                    # 执行独热编码
+                    df = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+                    new_columns = [col for col in df.columns if col not in original_columns]
+                    summary["encoding"]["one_hot"] = {
+                        "columns": categorical_cols,
+                        "new_columns_added": new_columns,
+                        "total_columns_added": len(new_columns)
+                    }
+                
+                elif encoding_strategy == 'label_encoding':
+                    # 执行标签编码
+                    for col in categorical_cols:
+                        df[col] = pd.Categorical(df[col]).codes
+                    summary["encoding"]["label_encoding"] = {
+                        "columns": categorical_cols
+                    }
+
+        # 更新列信息
+        summary["columns"]["processed"] = list(df.columns)
+        summary["columns"]["added"] = [col for col in df.columns if col not in summary["columns"]["original"]]
+        summary["columns"]["removed"] = [col for col in summary["columns"]["original"] if col not in df.columns]
 
         # 通过存储适配层保存预处理结果
         task_id = config.get('task_id', 'unknown')
@@ -369,6 +524,7 @@ async def run_preprocessing_task(ctx: Dict[str, Any], dataset_id: str, config: D
             "status": "completed",
             "original_shape": original_shape,
             "processed_shape": df.shape,
+            "summary": summary,
             # 存储信息
             "storage_type": storage_info["storage_type"],
             "object_key": storage_info["object_key"],
@@ -420,15 +576,15 @@ async def run_feature_engineering_task(ctx: Dict[str, Any], dataset_id: str, con
             if time_column and time_column in df.columns:
                 df[time_column] = pd.to_datetime(df[time_column])
 
-                features = time_config.get('features', ['hour', 'day_of_week', 'month'])
+                features = time_config.get('features', ['hour', 'dayofweek', 'month', 'is_weekend'])
 
                 if 'hour' in features:
                     df[f'{time_column}_hour'] = df[time_column].dt.hour
                     new_features.append(f'{time_column}_hour')
 
-                if 'day_of_week' in features:
-                    df[f'{time_column}_day_of_week'] = df[time_column].dt.dayofweek
-                    new_features.append(f'{time_column}_day_of_week')
+                if 'dayofweek' in features:
+                    df[f'{time_column}_dayofweek'] = df[time_column].dt.dayofweek
+                    new_features.append(f'{time_column}_dayofweek')
 
                 if 'month' in features:
                     df[f'{time_column}_month'] = df[time_column].dt.month
@@ -455,15 +611,19 @@ async def run_feature_engineering_task(ctx: Dict[str, Any], dataset_id: str, con
         rolling_config = config.get('rolling_features', {})
         if rolling_config.get('enabled'):
             columns = rolling_config.get('columns', [])
-            windows = rolling_config.get('windows', [7, 14])
+            windows = rolling_config.get('windows', [3, 6, 24])
 
             for col in columns:
                 if col in df.columns:
                     for window in windows:
                         df[f'{col}_rolling_mean_{window}'] = df[col].rolling(window=window).mean()
+                        df[f'{col}_rolling_min_{window}'] = df[col].rolling(window=window).min()
+                        df[f'{col}_rolling_max_{window}'] = df[col].rolling(window=window).max()
                         df[f'{col}_rolling_std_{window}'] = df[col].rolling(window=window).std()
                         new_features.extend([
                             f'{col}_rolling_mean_{window}',
+                            f'{col}_rolling_min_{window}',
+                            f'{col}_rolling_max_{window}',
                             f'{col}_rolling_std_{window}'
                         ])
 

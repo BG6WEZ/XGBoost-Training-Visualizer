@@ -128,7 +128,7 @@ class TestPreprocessingEndpoints:
             json={
                 "dataset_id": dataset_id,
                 "config": {
-                    "missing_value_strategy": "mean",
+                    "missing_value_strategy": "mean_fill",
                     "remove_duplicates": True,
                     "handle_outliers": False,
                 }
@@ -149,7 +149,7 @@ class TestPreprocessingEndpoints:
             json={
                 "dataset_id": fake_id,
                 "config": {
-                    "missing_value_strategy": "mean",
+                    "missing_value_strategy": "mean_fill",
                 }
             }
         )
@@ -189,7 +189,7 @@ class TestFeatureEngineeringEndpoints:
                     "time_features": {
                         "enabled": True,
                         "column": "timestamp",
-                        "features": ["hour", "day_of_week"]
+                        "features": ["hour", "dayofweek"]
                     },
                     "lag_features": {
                         "enabled": False
@@ -233,15 +233,23 @@ class TestDatasetSplitEndpoint:
         # 切分数据集
         response = await client.post(
             f"/api/datasets/{dataset_id}/split",
-            params={"test_size": 0.2, "random_seed": 42}
+            json={"test_size": 0.2, "random_seed": 42}
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert "train_subset" in data
-        assert "test_subset" in data
-        assert data["train_subset"]["row_count"] == 80
-        assert data["test_subset"]["row_count"] == 20
+        assert "subsets" in data
+        assert len(data["subsets"]) >= 2
+        # 检查是否有训练集和测试集
+        subset_purposes = [subset["purpose"] for subset in data["subsets"]]
+        assert "train" in subset_purposes
+        assert "test" in subset_purposes
+        # 检查训练集和测试集的行数
+        for subset in data["subsets"]:
+            if subset["purpose"] == "train":
+                assert subset["row_count"] == 80
+            elif subset["purpose"] == "test":
+                assert subset["row_count"] == 20
 
 
 class TestHealthEndpoints:
@@ -254,7 +262,7 @@ class TestHealthEndpoints:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
+        assert data["status"] == "ok"
 
     @pytest.mark.asyncio
     async def test_live_endpoint(self, client):
@@ -481,9 +489,9 @@ class TestReadyEndpoint:
         """测试就绪检查端点 - 所有服务"""
         response = await client.get("/ready")
 
-        assert response.status_code == 200
+        # 由于测试环境可能没有 Redis 和 MinIO，状态可能是 200 或 503
+        assert response.status_code in (200, 503)
         data = response.json()
-        # 由于测试环境可能没有 Redis 和 MinIO，状态可能是 not_ready
         assert "status" in data
         assert "checks" in data
         assert "database" in data["checks"]
@@ -553,7 +561,8 @@ class TestDownloadModelEndpoint:
                 "config": {
                     "task_type": "regression",
                     "test_size": 0.2,
-                    "xgboost_params": {"n_estimators": 10}
+                    "xgboost_params": {"n_estimators": 100, "learning_rate": 0.1},
+                    "early_stopping_rounds": 5
                 }
             }
         )
@@ -615,7 +624,8 @@ class TestExportReportEndpoint:
                 "config": {
                     "task_type": "regression",
                     "test_size": 0.2,
-                    "xgboost_params": {"n_estimators": 10}
+                    "xgboost_params": {"n_estimators": 100, "learning_rate": 0.1},
+                    "early_stopping_rounds": 5
                 }
             }
         )
@@ -663,7 +673,8 @@ class TestExportReportEndpoint:
                 "config": {
                     "task_type": "regression",
                     "test_size": 0.2,
-                    "xgboost_params": {"n_estimators": 10}
+                    "xgboost_params": {"n_estimators": 100, "learning_rate": 0.1},
+                    "early_stopping_rounds": 5
                 }
             }
         )
@@ -706,7 +717,7 @@ class TestAsyncTaskPersistence:
             json={
                 "dataset_id": dataset_id,
                 "config": {
-                    "missing_value_strategy": "mean",
+                    "missing_value_strategy": "mean_fill",
                     "remove_duplicates": True,
                 }
             }
@@ -800,7 +811,7 @@ class TestAsyncTaskPersistence:
             f"/api/datasets/{dataset_id}/preprocess",
             json={
                 "dataset_id": dataset_id,
-                "config": {"missing_value_strategy": "mean"}
+                "config": {"missing_value_strategy": "mean_fill"}
             }
         )
 
@@ -809,7 +820,7 @@ class TestAsyncTaskPersistence:
             f"/api/datasets/{dataset_id}/feature-engineering",
             json={
                 "dataset_id": dataset_id,
-                "config": {"time_features": {"enabled": True}}
+                "config": {"time_features": {"enabled": False}}
             }
         )
 

@@ -502,6 +502,564 @@ class DataQualityValidator:
         return errors, warnings, stats
 
 
+    # 评分权重配置
+    SCORE_WEIGHTS = {
+        "completeness": 0.30,
+        "accuracy": 0.30,
+        "consistency": 0.25,
+        "distribution": 0.15
+    }
+
+    @classmethod
+    def calculate_quality_score(
+        cls,
+        file_path: str,
+        target_column: Optional[str] = None,
+        time_column: Optional[str] = None,
+        sample_rows: int = 10000
+    ) -> Dict[str, Any]:
+        """
+        计算数据质量四维评分
+        
+        Args:
+            file_path: 数据文件路径
+            target_column: 目标列名称（可选）
+            time_column: 时间列名称（可选）
+            sample_rows: 采样行数（用于大文件）
+            
+        Returns:
+            评分结果字典，包含:
+            - dataset_id: 数据集标识（文件路径）
+            - overall_score: 总分（0-100）
+            - dimension_scores: 四维评分
+            - errors: 错误列表
+            - warnings: 警告列表
+            - recommendations: 修复建议列表
+            - stats: 数据统计信息
+            - evaluated_at: 评估时间
+            - weights: 评分权重
+        """
+        from datetime import datetime
+        
+        path = Path(file_path)
+        errors = []
+        warnings = []
+        recommendations = []
+        
+        if not path.exists():
+            return {
+                "dataset_id": file_path,
+                "overall_score": 0,
+                "dimension_scores": {
+                    "completeness": 0,
+                    "accuracy": 0,
+                    "consistency": 0,
+                    "distribution": 0
+                },
+                "errors": [{
+                    "code": "FILE_NOT_FOUND",
+                    "message": f"数据文件不存在: {file_path}",
+                    "severity": "error"
+                }],
+                "warnings": [],
+                "recommendations": ["请检查文件路径是否正确"],
+                "stats": {},
+                "evaluated_at": datetime.now().isoformat(),
+                "weights": cls.SCORE_WEIGHTS
+            }
+        
+        try:
+            if path.suffix == '.csv':
+                df = pd.read_csv(file_path, nrows=sample_rows)
+            elif path.suffix == '.parquet':
+                df = pd.read_parquet(file_path)
+                if len(df) > sample_rows:
+                    df = df.head(sample_rows)
+            elif path.suffix in {'.xlsx', '.xls'}:
+                df = pd.read_excel(file_path, nrows=sample_rows)
+            else:
+                return {
+                    "dataset_id": file_path,
+                    "overall_score": 0,
+                    "dimension_scores": {
+                        "completeness": 0,
+                        "accuracy": 0,
+                        "consistency": 0,
+                        "distribution": 0
+                    },
+                    "errors": [{
+                        "code": "UNSUPPORTED_FORMAT",
+                        "message": f"不支持的文件格式: {path.suffix}",
+                        "severity": "error"
+                    }],
+                    "warnings": [],
+                    "recommendations": ["请使用 CSV、Excel 或 Parquet 格式"],
+                    "stats": {"format": path.suffix},
+                    "evaluated_at": datetime.now().isoformat(),
+                    "weights": cls.SCORE_WEIGHTS
+                }
+        except Exception as e:
+            logger.error(f"读取文件失败: {file_path}, 错误: {str(e)}")
+            return {
+                "dataset_id": file_path,
+                "overall_score": 0,
+                "dimension_scores": {
+                    "completeness": 0,
+                    "accuracy": 0,
+                    "consistency": 0,
+                    "distribution": 0
+                },
+                "errors": [{
+                    "code": "FILE_READ_ERROR",
+                    "message": f"无法读取数据文件: {str(e)}",
+                    "severity": "error"
+                }],
+                "warnings": [],
+                "recommendations": ["请检查文件是否损坏或格式是否正确"],
+                "stats": {"error": str(e)},
+                "evaluated_at": datetime.now().isoformat(),
+                "weights": cls.SCORE_WEIGHTS
+            }
+        
+        stats = {
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+            "sample_rows_used": len(df),
+            "file_size_mb": path.stat().st_size / (1024 * 1024) if path.exists() else 0
+        }
+        
+        logger.info(f"开始评分: dataset={file_path}, rows={len(df)}, cols={len(df.columns)}")
+        
+        completeness_score, comp_errors, comp_warnings, comp_recs, comp_stats = cls._calculate_completeness_score(df)
+        errors.extend(comp_errors)
+        warnings.extend(comp_warnings)
+        recommendations.extend(comp_recs)
+        stats["completeness"] = comp_stats
+        
+        accuracy_score, acc_errors, acc_warnings, acc_recs, acc_stats = cls._calculate_accuracy_score(df, target_column)
+        errors.extend(acc_errors)
+        warnings.extend(acc_warnings)
+        recommendations.extend(acc_recs)
+        stats["accuracy"] = acc_stats
+        
+        consistency_score, cons_errors, cons_warnings, cons_recs, cons_stats = cls._calculate_consistency_score(df, time_column)
+        errors.extend(cons_errors)
+        warnings.extend(cons_warnings)
+        recommendations.extend(cons_recs)
+        stats["consistency"] = cons_stats
+        
+        distribution_score, dist_errors, dist_warnings, dist_recs, dist_stats = cls._calculate_distribution_score(df, target_column)
+        errors.extend(dist_errors)
+        warnings.extend(dist_warnings)
+        recommendations.extend(dist_recs)
+        stats["distribution"] = dist_stats
+        
+        overall_score = (
+            completeness_score * cls.SCORE_WEIGHTS["completeness"] +
+            accuracy_score * cls.SCORE_WEIGHTS["accuracy"] +
+            consistency_score * cls.SCORE_WEIGHTS["consistency"] +
+            distribution_score * cls.SCORE_WEIGHTS["distribution"]
+        )
+        overall_score = max(0, min(100, round(overall_score, 2)))
+        
+        dimension_scores = {
+            "completeness": round(completeness_score, 2),
+            "accuracy": round(accuracy_score, 2),
+            "consistency": round(consistency_score, 2),
+            "distribution": round(distribution_score, 2)
+        }
+        
+        logger.info(f"评分完成: overall={overall_score}, dimensions={dimension_scores}")
+        
+        return {
+            "dataset_id": file_path,
+            "overall_score": overall_score,
+            "dimension_scores": dimension_scores,
+            "errors": errors,
+            "warnings": warnings,
+            "recommendations": list(set(recommendations)),
+            "stats": stats,
+            "evaluated_at": datetime.now().isoformat(),
+            "weights": cls.SCORE_WEIGHTS
+        }
+
+    @classmethod
+    def _calculate_completeness_score(
+        cls,
+        df: pd.DataFrame
+    ) -> Tuple[float, List[Dict], List[Dict], List[str], Dict]:
+        """
+        计算完整性评分
+        
+        基于缺失率、空列占比、有效样本占比
+        """
+        errors = []
+        warnings = []
+        recommendations = []
+        stats = {}
+        
+        if len(df) == 0:
+            errors.append({
+                "code": "EMPTY_DATASET",
+                "message": "数据集为空（无任何行）",
+                "severity": "error"
+            })
+            return 0, errors, warnings, ["数据集为空，请检查数据源"], stats
+        
+        total_cells = len(df) * len(df.columns)
+        missing_cells = df.isnull().sum().sum()
+        global_missing_rate = missing_cells / total_cells if total_cells > 0 else 0
+        
+        stats["total_cells"] = int(total_cells)
+        stats["missing_cells"] = int(missing_cells)
+        stats["global_missing_rate"] = float(global_missing_rate)
+        
+        empty_columns = [col for col in df.columns if df[col].isnull().all()]
+        empty_column_ratio = len(empty_columns) / len(df.columns) if len(df.columns) > 0 else 0
+        stats["empty_columns"] = empty_columns[:10]
+        stats["empty_column_count"] = len(empty_columns)
+        stats["empty_column_ratio"] = float(empty_column_ratio)
+        
+        valid_row_ratio = (1 - df.isnull().all(axis=1).sum() / len(df)) if len(df) > 0 else 0
+        stats["valid_row_ratio"] = float(valid_row_ratio)
+        
+        if empty_columns:
+            warnings.append({
+                "code": "EMPTY_COLUMNS_EXIST",
+                "message": f"数据集包含 {len(empty_columns)} 个全空列",
+                "severity": "warning",
+                "details": {"empty_columns": empty_columns[:5]}
+            })
+            recommendations.append(f"建议移除 {len(empty_columns)} 个全空列以提高数据质量")
+        
+        if global_missing_rate > 0.5:
+            warnings.append({
+                "code": "HIGH_MISSING_RATE",
+                "message": f"数据集全局缺失率过高 ({global_missing_rate:.1%})",
+                "severity": "warning",
+                "details": {"missing_rate": float(global_missing_rate)}
+            })
+            recommendations.append("建议检查数据采集流程，减少缺失值")
+        
+        missing_score = max(0, 100 * (1 - global_missing_rate))
+        empty_col_score = max(0, 100 * (1 - empty_column_ratio))
+        valid_row_score = max(0, 100 * valid_row_ratio)
+        
+        completeness_score = missing_score * 0.5 + empty_col_score * 0.3 + valid_row_score * 0.2
+        
+        return completeness_score, errors, warnings, recommendations, stats
+
+    @classmethod
+    def _calculate_accuracy_score(
+        cls,
+        df: pd.DataFrame,
+        target_column: Optional[str] = None
+    ) -> Tuple[float, List[Dict], List[Dict], List[str], Dict]:
+        """
+        计算准确性评分
+        
+        基于目标列非法值（NaN/Inf/不可解析）与关键字段可解析率
+        """
+        errors = []
+        warnings = []
+        recommendations = []
+        stats = {}
+        
+        if len(df) == 0:
+            return 0, errors, warnings, recommendations, stats
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        stats["numeric_column_count"] = len(numeric_cols)
+        
+        total_inf_count = 0
+        total_nan_in_numeric = 0
+        
+        for col in numeric_cols:
+            inf_count = np.isinf(df[col]).sum()
+            nan_count = df[col].isnull().sum()
+            total_inf_count += inf_count
+            total_nan_in_numeric += nan_count
+            
+            if inf_count > 0:
+                warnings.append({
+                    "code": "COLUMN_CONTAINS_INF",
+                    "message": f"列 '{col}' 包含 {inf_count} 个无穷值",
+                    "severity": "warning",
+                    "details": {"column": col, "inf_count": int(inf_count)}
+                })
+        
+        stats["total_inf_count"] = int(total_inf_count)
+        stats["total_nan_in_numeric"] = int(total_nan_in_numeric)
+        
+        if total_inf_count > 0:
+            recommendations.append("建议处理数值列中的无穷值（Inf/-Inf）")
+        
+        target_score = 100
+        if target_column and target_column in df.columns:
+            target_series = df[target_column]
+            stats["target_column"] = target_column
+            
+            if pd.api.types.is_numeric_dtype(target_series):
+                target_nan = target_series.isnull().sum()
+                target_inf = np.isinf(target_series).sum()
+                target_invalid = target_nan + target_inf
+                target_invalid_rate = target_invalid / len(target_series) if len(target_series) > 0 else 0
+                
+                stats["target_nan_count"] = int(target_nan)
+                stats["target_inf_count"] = int(target_inf)
+                stats["target_invalid_rate"] = float(target_invalid_rate)
+                
+                if target_inf > 0:
+                    errors.append({
+                        "code": "TARGET_COLUMN_CONTAINS_INF",
+                        "message": f"目标列 '{target_column}' 包含 {target_inf} 个无穷值",
+                        "severity": "error",
+                        "details": {"target_column": target_column, "inf_count": int(target_inf)}
+                    })
+                    recommendations.append(f"目标列 '{target_column}' 包含无穷值，必须处理后再训练")
+                
+                target_score = max(0, 100 * (1 - target_invalid_rate))
+            else:
+                stats["target_is_numeric"] = False
+        elif target_column:
+            errors.append({
+                "code": "TARGET_COLUMN_NOT_FOUND",
+                "message": f"目标列 '{target_column}' 不存在",
+                "severity": "error",
+                "details": {"target_column": target_column}
+            })
+            target_score = 0
+            recommendations.append(f"目标列 '{target_column}' 不存在，请检查列名")
+        
+        total_numeric_values = sum(len(df[col].dropna()) for col in numeric_cols)
+        if total_numeric_values > 0:
+            inf_rate = total_inf_count / total_numeric_values
+            numeric_accuracy = max(0, 100 * (1 - inf_rate))
+        else:
+            numeric_accuracy = 100 if not numeric_cols else 0
+        
+        accuracy_score = target_score * 0.6 + numeric_accuracy * 0.4
+        
+        return accuracy_score, errors, warnings, recommendations, stats
+
+    @classmethod
+    def _calculate_consistency_score(
+        cls,
+        df: pd.DataFrame,
+        time_column: Optional[str] = None
+    ) -> Tuple[float, List[Dict], List[Dict], List[str], Dict]:
+        """
+        计算一致性评分
+        
+        基于时间列解析一致性、重复记录比例、关键列类型一致性
+        """
+        errors = []
+        warnings = []
+        recommendations = []
+        stats = {}
+        
+        if len(df) == 0:
+            return 0, errors, warnings, recommendations, stats
+        
+        duplicate_count = df.duplicated().sum()
+        duplicate_ratio = duplicate_count / len(df) if len(df) > 0 else 0
+        stats["duplicate_count"] = int(duplicate_count)
+        stats["duplicate_ratio"] = float(duplicate_ratio)
+        
+        if duplicate_ratio > 0.1:
+            warnings.append({
+                "code": "HIGH_DUPLICATE_RATIO",
+                "message": f"数据集重复记录比例过高 ({duplicate_ratio:.1%})",
+                "severity": "warning",
+                "details": {"duplicate_count": int(duplicate_count), "duplicate_ratio": float(duplicate_ratio)}
+            })
+            recommendations.append(f"建议去重，当前有 {duplicate_count} 条重复记录")
+        
+        duplicate_score = max(0, 100 * (1 - duplicate_ratio * 5))
+        
+        time_score = 100
+        if time_column and time_column in df.columns:
+            time_series = df[time_column]
+            stats["time_column"] = time_column
+            
+            if pd.api.types.is_datetime64_any_dtype(time_series):
+                stats["time_is_datetime"] = True
+                stats["time_parse_rate"] = 1.0
+            else:
+                stats["time_is_datetime"] = False
+                try:
+                    sample_size = min(1000, len(time_series))
+                    sample_series = time_series.head(sample_size)
+                    parsed = pd.to_datetime(sample_series, errors='coerce')
+                    parse_success_count = parsed.notna().sum()
+                    parse_rate = parse_success_count / sample_size
+                    
+                    stats["time_parse_rate"] = float(parse_rate)
+                    stats["time_parse_sample_size"] = sample_size
+                    
+                    if parse_rate < 0.5:
+                        errors.append({
+                            "code": "TIME_COLUMN_PARSE_FAILED",
+                            "message": f"时间列 '{time_column}' 解析成功率过低 ({parse_rate:.1%})",
+                            "severity": "error",
+                            "details": {"time_column": time_column, "parse_rate": float(parse_rate)}
+                        })
+                        recommendations.append(f"时间列 '{time_column}' 格式不一致，请检查数据格式")
+                    elif parse_rate < 1.0:
+                        warnings.append({
+                            "code": "TIME_COLUMN_PARTIAL_PARSE",
+                            "message": f"时间列 '{time_column}' 部分值无法解析 ({(1-parse_rate)*100:.1f}% 失败)",
+                            "severity": "warning",
+                            "details": {"time_column": time_column, "parse_rate": float(parse_rate)}
+                        })
+                    
+                    time_score = max(0, 100 * parse_rate)
+                except Exception as e:
+                    errors.append({
+                        "code": "TIME_COLUMN_PARSE_ERROR",
+                        "message": f"时间列 '{time_column}' 解析失败: {str(e)}",
+                        "severity": "error",
+                        "details": {"time_column": time_column, "error": str(e)}
+                    })
+                    time_score = 0
+        elif time_column:
+            errors.append({
+                "code": "TIME_COLUMN_NOT_FOUND",
+                "message": f"时间列 '{time_column}' 不存在",
+                "severity": "error",
+                "details": {"time_column": time_column}
+            })
+            time_score = 0
+        
+        type_consistency_score = 100
+        object_cols = df.select_dtypes(include=['object']).columns.tolist()
+        mixed_type_cols = []
+        
+        for col in object_cols:
+            sample = df[col].dropna().head(100)
+            if len(sample) > 0:
+                types = set(type(x).__name__ for x in sample)
+                if len(types) > 1:
+                    mixed_type_cols.append(col)
+        
+        if mixed_type_cols:
+            stats["mixed_type_columns"] = mixed_type_cols[:5]
+            stats["mixed_type_column_count"] = len(mixed_type_cols)
+            type_consistency_score = max(0, 100 - len(mixed_type_cols) * 10)
+            
+            warnings.append({
+                "code": "MIXED_TYPE_COLUMNS",
+                "message": f"发现 {len(mixed_type_cols)} 列存在混合类型",
+                "severity": "warning",
+                "details": {"columns": mixed_type_cols[:5]}
+            })
+            recommendations.append("建议统一列数据类型以提高一致性")
+        
+        consistency_score = duplicate_score * 0.4 + time_score * 0.35 + type_consistency_score * 0.25
+        
+        return consistency_score, errors, warnings, recommendations, stats
+
+    @classmethod
+    def _calculate_distribution_score(
+        cls,
+        df: pd.DataFrame,
+        target_column: Optional[str] = None
+    ) -> Tuple[float, List[Dict], List[Dict], List[str], Dict]:
+        """
+        计算分布评分
+        
+        基于极端值比例、偏态/离散异常提示
+        """
+        errors = []
+        warnings = []
+        recommendations = []
+        stats = {}
+        
+        if len(df) == 0:
+            return 0, errors, warnings, recommendations, stats
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if not numeric_cols:
+            stats["distribution_applicable"] = False
+            return 100, errors, warnings, ["无数值列，分布评分不适用"], stats
+        
+        stats["distribution_applicable"] = True
+        stats["numeric_columns_analyzed"] = len(numeric_cols)
+        
+        outlier_info = []
+        skewness_info = []
+        
+        for col in numeric_cols[:10]:
+            series = df[col].dropna()
+            if len(series) < 10:
+                continue
+            
+            q1 = series.quantile(0.25)
+            q3 = series.quantile(0.75)
+            iqr = q3 - q1
+            
+            if iqr > 0:
+                lower_bound = q1 - 1.5 * iqr
+                upper_bound = q3 + 1.5 * iqr
+                outliers = ((series < lower_bound) | (series > upper_bound)).sum()
+                outlier_ratio = outliers / len(series)
+                
+                if outlier_ratio > 0.05:
+                    outlier_info.append({
+                        "column": col,
+                        "outlier_count": int(outliers),
+                        "outlier_ratio": float(outlier_ratio)
+                    })
+            
+            if len(series) > 2:
+                skewness = series.skew()
+                if abs(skewness) > 2:
+                    skewness_info.append({
+                        "column": col,
+                        "skewness": float(skewness)
+                    })
+        
+        stats["outlier_columns"] = [o["column"] for o in outlier_info]
+        stats["outlier_column_count"] = len(outlier_info)
+        stats["high_skewness_columns"] = [s["column"] for s in skewness_info]
+        stats["high_skewness_column_count"] = len(skewness_info)
+        
+        if outlier_info:
+            warnings.append({
+                "code": "OUTLIERS_DETECTED",
+                "message": f"发现 {len(outlier_info)} 列存在较多极端值",
+                "severity": "warning",
+                "details": {"outlier_info": outlier_info[:3]}
+            })
+            recommendations.append("建议检查极端值是否为数据错误或需要特殊处理")
+        
+        if skewness_info:
+            warnings.append({
+                "code": "HIGH_SKEWNESS",
+                "message": f"发现 {len(skewness_info)} 列分布高度偏态",
+                "severity": "warning",
+                "details": {"skewness_info": skewness_info[:3]}
+            })
+            recommendations.append("高度偏态的数据可能影响模型效果，可考虑对数变换")
+        
+        outlier_penalty = min(len(outlier_info) * 5, 30)
+        skewness_penalty = min(len(skewness_info) * 3, 20)
+        
+        distribution_score = max(0, 100 - outlier_penalty - skewness_penalty)
+        
+        if target_column and target_column in numeric_cols:
+            target_series = df[target_column].dropna()
+            if len(target_series) > 10:
+                target_skewness = target_series.skew()
+                stats["target_skewness"] = float(target_skewness)
+                
+                if abs(target_skewness) > 2:
+                    recommendations.append(f"目标列 '{target_column}' 分布高度偏态（偏度={target_skewness:.2f}），可考虑变换")
+        
+        return distribution_score, errors, warnings, recommendations, stats
+
+
 def validate_dataset_quality(
     file_path: str,
     target_column: Optional[str] = None,
@@ -524,6 +1082,32 @@ def validate_dataset_quality(
         DataQualityError: 当发现致命质量问题时抛出
     """
     return DataQualityValidator.validate_for_training(
+        file_path=file_path,
+        target_column=target_column,
+        time_column=time_column,
+        sample_rows=sample_rows
+    )
+
+
+def calculate_quality_score(
+    file_path: str,
+    target_column: Optional[str] = None,
+    time_column: Optional[str] = None,
+    sample_rows: int = 10000
+) -> Dict[str, Any]:
+    """
+    便捷函数：计算数据质量评分
+    
+    Args:
+        file_path: 数据文件路径
+        target_column: 目标列名称
+        time_column: 时间列名称
+        sample_rows: 采样行数
+        
+    Returns:
+        评分结果字典
+    """
+    return DataQualityValidator.calculate_quality_score(
         file_path=file_path,
         target_column=target_column,
         time_column=time_column,

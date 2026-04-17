@@ -13,7 +13,8 @@ from pathlib import Path
 from app.services.data_quality_validator import (
     DataQualityValidator,
     DataQualityError,
-    validate_dataset_quality
+    validate_dataset_quality,
+    calculate_quality_score
 )
 
 
@@ -546,6 +547,193 @@ class TestDataQualityValidatorParquet:
                 )
 
             assert exc_info.value.error_code == 'TARGET_COLUMN_CONTAINS_INF'
+
+        finally:
+            os.unlink(file_path)
+
+
+class TestQualityScore:
+    """数据质量评分测试"""
+
+    def test_normal_data_high_score(self):
+        """测试正常数据获得高分"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            df = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=100, freq='h'),
+                'building_id': ['A'] * 50 + ['B'] * 50,
+                'energy_consumption': [100 + i * 0.5 for i in range(100)],
+                'temperature': [20 + i * 0.1 for i in range(100)],
+            })
+            df.to_csv(f, index=False)
+            file_path = f.name
+
+        try:
+            from app.services.data_quality_validator import calculate_quality_score
+            result = calculate_quality_score(
+                file_path=file_path,
+                target_column='energy_consumption',
+                time_column='timestamp'
+            )
+
+            assert result['overall_score'] >= 80
+            assert result['dimension_scores']['completeness'] >= 90
+            assert result['dimension_scores']['accuracy'] >= 90
+            assert result['dimension_scores']['consistency'] >= 80
+            assert len(result['errors']) == 0
+
+        finally:
+            os.unlink(file_path)
+
+    def test_high_missing_rate_low_completeness(self):
+        """测试高缺失率数据完整性低分"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            df = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=100, freq='h'),
+                'target': [np.nan] * 80 + [100 + i * 0.5 for i in range(20)],
+                'col2': [np.nan] * 80 + [i for i in range(20)],
+            })
+            df.to_csv(f, index=False)
+            file_path = f.name
+
+        try:
+            from app.services.data_quality_validator import calculate_quality_score
+            result = calculate_quality_score(
+                file_path=file_path,
+                target_column='target',
+                time_column='timestamp'
+            )
+
+            assert result['dimension_scores']['completeness'] < 80
+            assert any('缺失' in w['message'] for w in result['warnings'])
+
+        finally:
+            os.unlink(file_path)
+
+    def test_target_column_inf_low_accuracy(self):
+        """测试目标列包含无穷值准确性低分"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            df = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=100, freq='h'),
+                'target': [100 + i * 0.5 if i < 90 else np.inf for i in range(100)],
+            })
+            df.to_csv(f, index=False)
+            file_path = f.name
+
+        try:
+            from app.services.data_quality_validator import calculate_quality_score
+            result = calculate_quality_score(
+                file_path=file_path,
+                target_column='target',
+                time_column='timestamp'
+            )
+
+            assert result['dimension_scores']['accuracy'] < 100
+            assert any('无穷值' in e['message'] for e in result['errors'])
+
+        finally:
+            os.unlink(file_path)
+
+    def test_time_column_parse_failed_low_consistency(self):
+        """测试时间列解析失败一致性低分"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            df = pd.DataFrame({
+                'timestamp': ['invalid_date'] * 100,
+                'target': [100 + i * 0.5 for i in range(100)],
+            })
+            df.to_csv(f, index=False)
+            file_path = f.name
+
+        try:
+            from app.services.data_quality_validator import calculate_quality_score
+            result = calculate_quality_score(
+                file_path=file_path,
+                target_column='target',
+                time_column='timestamp'
+            )
+
+            assert result['dimension_scores']['consistency'] < 80
+            assert any('时间列' in e['message'] for e in result['errors'])
+
+        finally:
+            os.unlink(file_path)
+
+    def test_score_range_0_to_100(self):
+        """测试评分范围严格在 [0, 100]"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            df = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=100, freq='h'),
+                'target': [100 + i * 0.5 for i in range(100)],
+            })
+            df.to_csv(f, index=False)
+            file_path = f.name
+
+        try:
+            from app.services.data_quality_validator import calculate_quality_score
+            result = calculate_quality_score(
+                file_path=file_path,
+                target_column='target',
+                time_column='timestamp'
+            )
+
+            assert 0 <= result['overall_score'] <= 100
+            for dim in ['completeness', 'accuracy', 'consistency', 'distribution']:
+                assert 0 <= result['dimension_scores'][dim] <= 100
+
+        finally:
+            os.unlink(file_path)
+
+    def test_weights_visible_in_result(self):
+        """测试评分权重在结果中可见"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            df = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=50, freq='h'),
+                'target': [100 + i * 0.5 for i in range(50)],
+            })
+            df.to_csv(f, index=False)
+            file_path = f.name
+
+        try:
+            from app.services.data_quality_validator import calculate_quality_score
+            result = calculate_quality_score(file_path=file_path)
+
+            assert 'weights' in result
+            assert 'completeness' in result['weights']
+            assert 'accuracy' in result['weights']
+            assert 'consistency' in result['weights']
+            assert 'distribution' in result['weights']
+
+        finally:
+            os.unlink(file_path)
+
+    def test_file_not_found_returns_zero_score(self):
+        """测试文件不存在返回零分"""
+        from app.services.data_quality_validator import calculate_quality_score
+        result = calculate_quality_score(file_path='/non/existent/file.csv')
+
+        assert result['overall_score'] == 0
+        assert any('不存在' in e['message'] for e in result['errors'])
+
+    def test_recommendations_actionable(self):
+        """测试修复建议可操作"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            df = pd.DataFrame({
+                'timestamp': pd.date_range('2024-01-01', periods=100, freq='h'),
+                'target': [np.nan] * 50 + [100 + i * 0.5 for i in range(50)],
+                'empty_col': [None] * 100,
+            })
+            df.to_csv(f, index=False)
+            file_path = f.name
+
+        try:
+            from app.services.data_quality_validator import calculate_quality_score
+            result = calculate_quality_score(
+                file_path=file_path,
+                target_column='target'
+            )
+
+            assert len(result['recommendations']) > 0
+            for rec in result['recommendations']:
+                assert len(rec) > 0
 
         finally:
             os.unlink(file_path)

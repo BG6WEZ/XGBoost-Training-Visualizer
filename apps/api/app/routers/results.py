@@ -6,6 +6,8 @@ from typing import List, Optional
 import uuid
 import os
 import io
+import json
+import numpy as np
 
 from app.database import get_db
 from app.models import Experiment, TrainingMetric, FeatureImportance, Model, ExperimentStatus
@@ -15,8 +17,13 @@ from app.schemas.results import (
     MetricsHistoryResponse,
     CompareExperimentsResponse, ExperimentComparisonItem,
     ExperimentReportResponse, ExperimentReportExperiment,
-    ReportMetricItem, ReportFeatureImportance, ReportModelInfo
+    ReportMetricItem, ReportFeatureImportance, ReportModelInfo,
+    PredictionAnalysisResponse, PredictionAnalysisData,
+    ResidualSummary, PredictionScatterPoint, ResidualHistogramBin, ResidualScatterPoint,
+    BenchmarkMetrics
 )
+from app.services.storage import get_storage_service
+from app.services.benchmark import calculate_benchmark_metrics
 
 router = APIRouter()
 
@@ -65,6 +72,24 @@ async def get_results(
     )
     model = model_result.scalar_one_or_none()
 
+    benchmark_metrics = None
+    if experiment.status == "completed":
+        try:
+            storage = get_storage_service()
+            prediction_data_bytes = await storage.get_prediction_data(experiment_id)
+            prediction_data = json.loads(prediction_data_bytes.decode('utf-8'))
+            validation_data = prediction_data.get("validation", {})
+            actual_values = validation_data.get("actual_values", [])
+            predicted_values = validation_data.get("predicted_values", [])
+            if actual_values and predicted_values:
+                benchmark_metrics = calculate_benchmark_metrics(actual_values, predicted_values)
+        except FileNotFoundError:
+            pass
+        except RuntimeError:
+            pass
+        except Exception:
+            pass
+
     return {
         "experiment_id": experiment_id,
         "experiment_name": experiment.name,
@@ -75,6 +100,8 @@ async def get_results(
             "r2": model.metrics.get("r2") if model and model.metrics else None,
             "mae": model.metrics.get("mae") if model and model.metrics else None,
         },
+        "benchmark": benchmark_metrics,
+        "benchmark_mode": "standard",
         "feature_importance": [
             {
                 "feature_name": fi.feature_name,
@@ -420,3 +447,129 @@ async def export_report(
         )
 
     return report
+
+
+@router.get("/{experiment_id}/prediction-analysis", response_model=PredictionAnalysisResponse)
+async def get_prediction_analysis(
+    experiment_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    获取预测分析数据
+    
+    返回预测值、实际值、残差数据，用于生成预测 vs 实际散点图、残差分布图等。
+    
+    残差定义: residual = actual - predicted
+    - 正值表示预测偏低（实际值大于预测值）
+    - 负值表示预测偏高（实际值小于预测值）
+    
+    若训练产物缺少逐样本预测数据，返回 analysis_unavailable_reason 说明原因。
+    """
+    try:
+        exp_uuid = uuid.UUID(experiment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid experiment ID format")
+
+    result = await db.execute(select(Experiment).where(Experiment.id == exp_uuid))
+    experiment = result.scalar_one_or_none()
+
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    if experiment.status != "completed":
+        return PredictionAnalysisResponse(
+            experiment_id=experiment_id,
+            analysis_available=False,
+            analysis_unavailable_reason=f"实验状态为 {experiment.status}，尚未完成训练"
+        )
+
+    try:
+        storage = get_storage_service()
+    except RuntimeError:
+        return PredictionAnalysisResponse(
+            experiment_id=experiment_id,
+            analysis_available=False,
+            analysis_unavailable_reason="存储服务未初始化"
+        )
+
+    try:
+        prediction_data_bytes = await storage.get_prediction_data(experiment_id)
+        prediction_data = json.loads(prediction_data_bytes.decode('utf-8'))
+    except FileNotFoundError:
+        return PredictionAnalysisResponse(
+            experiment_id=experiment_id,
+            analysis_available=False,
+            analysis_unavailable_reason="当前实验缺少逐样本预测工件。此功能需要重新训练实验以生成预测数据。"
+        )
+    except Exception as e:
+        return PredictionAnalysisResponse(
+            experiment_id=experiment_id,
+            analysis_available=False,
+            analysis_unavailable_reason=f"读取预测数据失败: {str(e)}"
+        )
+
+    validation_data = prediction_data.get("validation", {})
+    actual_values = validation_data.get("actual_values", [])
+    predicted_values = validation_data.get("predicted_values", [])
+    residual_values = validation_data.get("residual_values", [])
+
+    if not actual_values or not predicted_values:
+        return PredictionAnalysisResponse(
+            experiment_id=experiment_id,
+            analysis_available=False,
+            analysis_unavailable_reason="预测数据为空"
+        )
+
+    actual_arr = np.array(actual_values)
+    predicted_arr = np.array(predicted_values)
+    residual_arr = np.array(residual_values)
+
+    if len(residual_arr) == 0:
+        residual_arr = actual_arr - predicted_arr
+
+    residual_summary = ResidualSummary(
+        mean=float(np.mean(residual_arr)),
+        std=float(np.std(residual_arr)),
+        min=float(np.min(residual_arr)),
+        max=float(np.max(residual_arr)),
+        p50=float(np.percentile(residual_arr, 50)),
+        p95=float(np.percentile(residual_arr, 95))
+    )
+
+    prediction_scatter_points = [
+        PredictionScatterPoint(actual=float(a), predicted=float(p))
+        for a, p in zip(actual_values, predicted_values)
+    ]
+
+    n_bins = 20
+    hist, bin_edges = np.histogram(residual_arr, bins=n_bins)
+    residual_histogram_bins = [
+        ResidualHistogramBin(
+            bin_start=float(bin_edges[i]),
+            bin_end=float(bin_edges[i + 1]),
+            count=int(hist[i])
+        )
+        for i in range(len(hist))
+    ]
+
+    residual_scatter_points = [
+        ResidualScatterPoint(predicted=float(p), residual=float(r))
+        for p, r in zip(predicted_values, residual_arr.tolist())
+    ]
+
+    analysis_data = PredictionAnalysisData(
+        sample_count=len(actual_values),
+        actual_values=actual_values,
+        predicted_values=predicted_values,
+        residual_values=residual_arr.tolist(),
+        residual_summary=residual_summary,
+        prediction_scatter_points=prediction_scatter_points,
+        residual_histogram_bins=residual_histogram_bins,
+        residual_scatter_points=residual_scatter_points
+    )
+
+    return PredictionAnalysisResponse(
+        experiment_id=experiment_id,
+        analysis_available=True,
+        data=analysis_data
+    )

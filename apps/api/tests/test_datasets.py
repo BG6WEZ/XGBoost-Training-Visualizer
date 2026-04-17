@@ -506,3 +506,149 @@ class TestDatasetAPI:
         file_names = [f["file_name"] for f in data["files"]]
         assert "new_file1.csv" in file_names
         assert "new_file2.csv" in file_names
+
+
+class TestAsyncLineCount:
+    """异步行计数测试 - Task 2.1 (M7-T62)"""
+
+    @pytest.mark.asyncio
+    async def test_count_lines_async_small_file(self):
+        """验证异步行计数对小文件的正确性"""
+        import tempfile
+        import os
+        from app.services.storage import count_lines_async
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as f:
+            f.write("a,b,c\n")
+            f.write("1,2,3\n")
+            f.write("4,5,6\n")
+            temp_path = f.name
+
+        try:
+            count = await count_lines_async(temp_path)
+            assert count == 3
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.asyncio
+    async def test_count_lines_async_empty_file(self):
+        """验证异步行计数对空文件的处理"""
+        import tempfile
+        import os
+        from app.services.storage import count_lines_async
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as f:
+            temp_path = f.name
+
+        try:
+            count = await count_lines_async(temp_path)
+            assert count == 0
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.asyncio
+    async def test_estimate_line_count_accuracy(self):
+        """验证采样估算的精度（±20%）"""
+        import tempfile
+        import os
+        from app.services.storage import estimate_line_count
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as f:
+            for i in range(10000):
+                f.write(f"line_{i},data_{i},value_{i}\n")
+            temp_path = f.name
+
+        try:
+            estimated = await estimate_line_count(temp_path, sample_lines=1000)
+            actual = 10000
+            error = abs(estimated - actual) / actual
+            # 允许 ±20% 误差（采样估算的固有特性）
+            assert error < 0.2, f"估算误差过大：{error*100:.1f}%"
+        finally:
+            os.unlink(temp_path)
+
+    @pytest.mark.asyncio
+    async def test_estimate_line_count_empty_file(self):
+        """验证采样估算对空文件返回 0"""
+        import tempfile
+        import os
+        from app.services.storage import estimate_line_count
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as f:
+            temp_path = f.name
+
+        try:
+            estimated = await estimate_line_count(temp_path)
+            assert estimated == 0
+        finally:
+            os.unlink(temp_path)
+
+
+class TestLargeFileUpload:
+    """大文件上传不阻塞测试 - Task 2.1 延迟根因定位 + 30s 门槛达标 (M7-T65)"""
+
+    @pytest.mark.asyncio
+    async def test_upload_large_csv_over_50mb_does_not_block(self, tmp_path):
+        """
+        验证：上传 >50MB CSV 文件不超时（统一异步处理）
+        
+        使用 >50MB 的文件测试，确保：
+        1. 请求在 30s 内完成（显式断言）
+        2. 返回 200 且含 row_count
+        3. 对触发估算分支的文件（>100MB），estimated == true
+        """
+        import time
+        from httpx import AsyncClient, ASGITransport, Timeout
+
+        # 阶段 1：生成 >50MB 的 CSV 文件（使用高效写入，不计入计时）
+        large_file_path = tmp_path / "large_50mb.csv"
+        
+        # 使用固定宽度行，减少循环开销
+        # 每行约 48 bytes: "col1=0000000000,col2=0000000000,col3=0000000000\n"
+        line = "col1=0000000000,col2=0000000000,col3=0000000000\n"
+        line_bytes = len(line.encode('utf-8'))  # ~48 bytes
+        target_size = 55 * 1024 * 1024  # 55MB（确保 >50MB）
+        num_lines = target_size // line_bytes + 1
+
+        with open(large_file_path, 'w', encoding='utf-8') as f:
+            f.write("col1,col2,col3\n")  # 表头
+            for i in range(num_lines):
+                f.write(line)
+
+        file_size = os.path.getsize(large_file_path)
+        assert file_size > 50 * 1024 * 1024, f"Test file must be >50MB, got {file_size / (1024*1024):.1f}MB"
+
+        # 创建带长超时的客户端（避免测试环境超时）
+        timeout = Timeout(300.0, connect=10.0)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test", timeout=timeout) as ac:
+            # 阶段 2：计时上传请求（仅计时请求本身）
+            start_time = time.time()
+            with open(large_file_path, 'rb') as f:
+                response = await ac.post(
+                    "/api/datasets/upload",
+                    files={"file": ("large_50mb.csv", f, "text/csv")}
+                )
+            elapsed = time.time() - start_time
+
+            # 断言
+            assert response.status_code == 200, f"Upload failed with status {response.status_code}"
+            data = response.json()
+            assert "row_count" in data, "Response missing row_count"
+            assert data["row_count"] is not None, "row_count should not be None"
+            # 验证行计数正确（应该等于 num_lines）
+            assert data["row_count"] == num_lines, f"Row count mismatch: got {data['row_count']}, expected {num_lines}"
+            
+            # 验证 estimated 字段
+            # 10MB-100MB 使用异步计数（estimated=None），>100MB 使用采样估算（estimated=True）
+            if file_size >= 100 * 1024 * 1024:
+                assert data.get("estimated") == True, f"Large file ({file_size / (1024*1024):.1f}MB) should have estimated=true"
+            
+            # 显式断言 30s 门槛（Task 2.1 验收标准）
+            assert elapsed < 30, f"Upload took {elapsed:.2f}s, must be <30s"
+            
+            # 清理
+            os.unlink(large_file_path)
+
+            # 记录耗时（用于审计证据）
+            print(f"\nLarge file upload (>50MB): {file_size / (1024*1024):.1f}MB, elapsed={elapsed:.2f}s, row_count={data['row_count']}")

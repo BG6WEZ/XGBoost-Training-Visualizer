@@ -50,8 +50,9 @@ fi
 # 安装依赖
 pip install -q -r requirements.txt 2>/dev/null || pip install -r requirements.txt
 
-# 运行迁移
-python scripts/migrate_db.py 2>/dev/null || echo "   数据库迁移跳过（可能已完成）"
+# 运行 Alembic 数据库迁移
+echo "   执行数据库迁移 (alembic upgrade head)..."
+alembic upgrade head 2>/dev/null || python -m alembic upgrade head 2>/dev/null || echo "   警告: Alembic 迁移失败，请手动执行 alembic upgrade head"
 
 # 后台启动 API
 echo "   启动 API 服务 (端口 8000)..."

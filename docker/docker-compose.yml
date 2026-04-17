@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 前端服务
   frontend:
@@ -9,7 +7,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - VITE_API_URL=http://api:8000
+      - VITE_API_URL=http://localhost:8000
     depends_on:
       - api
     networks:
@@ -23,14 +21,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://xgboost:xgboost123@postgres:5432/xgboost_vis
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_BUCKET=xgboost-vis
-      - MINIO_SECURE=false
-      - WORKSPACE_DIR=/app/workspace
+      - DATABASE_URL=${DATABASE_URL:-postgresql://xgboost:xgboost123@postgres:5432/xgboost_vis}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - JWT_SECRET=${JWT_SECRET:-docker-dev-secret-not-for-production}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-xgboost-vis}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - WORKSPACE_DIR=${WORKSPACE_DIR:-/app/workspace}
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,14 +49,15 @@ services:
       context: ../apps/worker
       dockerfile: Dockerfile
     environment:
-      - DATABASE_URL=postgresql://xgboost:xgboost123@postgres:5432/xgboost_vis
-      - REDIS_URL=redis://redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - MINIO_BUCKET=xgboost-vis
-      - MINIO_SECURE=false
-      - WORKSPACE_DIR=/app/workspace
+      - DATABASE_URL=${DATABASE_URL:-postgresql://xgboost:xgboost123@postgres:5432/xgboost_vis}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - JWT_SECRET=${JWT_SECRET:-docker-dev-secret-not-for-production}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-xgboost-vis}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - WORKSPACE_DIR=${WORKSPACE_DIR:-/app/workspace}
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,9 +75,9 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=xgboost
-      - POSTGRES_PASSWORD=xgboost123
-      - POSTGRES_DB=xgboost_vis
+      - POSTGRES_USER=${POSTGRES_USER:-xgboost}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-xgboost123}
+      - POSTGRES_DB=${POSTGRES_DB:-xgboost_vis}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     ports:
@@ -85,7 +85,7 @@ services:
     networks:
       - xgboost-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U xgboost -d xgboost_vis"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-xgboost} -d ${POSTGRES_DB:-xgboost_vis}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -108,8 +108,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
       - minio-data:/data
     networks:

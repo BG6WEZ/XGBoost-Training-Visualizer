@@ -1,7 +1,7 @@
 """Redis 队列服务"""
 import json
 import redis.asyncio as redis
-from typing import Optional, Any
+from typing import Optional, Any, Dict, List
 from pydantic import BaseModel
 
 from app.config import settings
@@ -16,16 +16,27 @@ class TrainingTask(BaseModel):
     task_version: int = 0  # 入队时的版本号，用于竞态保护
 
 
+class QueueStats(BaseModel):
+    """队列统计"""
+    running_count: int
+    queued_count: int
+    max_concurrency: int
+    available_slots: int
+
+
 class QueueService:
     """Redis 队列服务"""
 
     TRAINING_QUEUE = "training:queue"
     EXPERIMENT_STATUS_CHANNEL = "experiment:status"
     TASK_VERSION_PREFIX = "task:version:"  # 任务版本号，用于竞态保护
+    RUNNING_TASKS_SET = "training:running"  # 正在运行的任务集合
+    QUEUE_POSITION_PREFIX = "queue:position:"  # 队列位置前缀
 
-    def __init__(self, redis_url: str):
+    def __init__(self, redis_url: str, max_concurrency: int = None):
         self.redis_url = redis_url
         self._redis: Optional[redis.Redis] = None
+        self._max_concurrency = max_concurrency or settings.TRAINING_MAX_CONCURRENCY
 
     async def connect(self):
         """连接 Redis"""
@@ -193,6 +204,85 @@ class QueueService:
         if data:
             return json.loads(data)
         return None
+
+    @property
+    def max_concurrency(self) -> int:
+        """获取最大并发数"""
+        return self._max_concurrency
+
+    async def get_running_count(self) -> int:
+        """获取当前运行中的任务数"""
+        return await self.redis.scard(self.RUNNING_TASKS_SET)
+
+    async def get_queued_count(self) -> int:
+        """获取当前排队中的任务数"""
+        return await self.redis.llen(self.TRAINING_QUEUE)
+
+    async def get_available_slots(self) -> int:
+        """获取可用槽位数"""
+        running = await self.get_running_count()
+        return max(0, self._max_concurrency - running)
+
+    async def get_queue_stats(self) -> QueueStats:
+        """获取队列统计信息"""
+        running_count = await self.get_running_count()
+        queued_count = await self.get_queued_count()
+        return QueueStats(
+            running_count=running_count,
+            queued_count=queued_count,
+            max_concurrency=self._max_concurrency,
+            available_slots=max(0, self._max_concurrency - running_count)
+        )
+
+    async def can_start_training(self) -> bool:
+        """检查是否可以开始训练"""
+        running = await self.get_running_count()
+        return running < self._max_concurrency
+
+    async def register_running_task(self, experiment_id: str) -> bool:
+        """
+        注册运行中的任务
+        
+        Returns:
+            是否成功注册（如果槽位已满返回 False）
+        """
+        if not await self.can_start_training():
+            return False
+        await self.redis.sadd(self.RUNNING_TASKS_SET, experiment_id)
+        return True
+
+    async def unregister_running_task(self, experiment_id: str):
+        """注销运行中的任务"""
+        await self.redis.srem(self.RUNNING_TASKS_SET, experiment_id)
+
+    async def get_running_tasks(self) -> List[str]:
+        """获取所有运行中的任务 ID"""
+        return list(await self.redis.smembers(self.RUNNING_TASKS_SET))
+
+    async def get_queue_position(self, experiment_id: str) -> Optional[int]:
+        """
+        获取任务在队列中的位置
+        
+        Returns:
+            位置（从 1 开始），如果不在队列中返回 None
+        """
+        tasks = await self.redis.lrange(self.TRAINING_QUEUE, 0, -1)
+        for i, task_data in enumerate(tasks):
+            task_dict = json.loads(task_data)
+            if task_dict.get("experiment_id") == experiment_id:
+                return i + 1
+        return None
+
+    async def get_all_queue_positions(self) -> Dict[str, int]:
+        """获取所有排队任务的位置"""
+        positions = {}
+        tasks = await self.redis.lrange(self.TRAINING_QUEUE, 0, -1)
+        for i, task_data in enumerate(tasks):
+            task_dict = json.loads(task_data)
+            exp_id = task_dict.get("experiment_id")
+            if exp_id:
+                positions[exp_id] = i + 1
+        return positions
 
 
 # 全局队列服务实例

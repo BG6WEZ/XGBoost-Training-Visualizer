@@ -55,7 +55,11 @@ class LocalStorageAdapter(StorageAdapter):
         return "local"
 
     def _get_full_path(self, object_key: str) -> str:
-        return os.path.join(self._base_path, object_key)
+        """获取完整路径，防止路径穿越攻击"""
+        full_path = os.path.normpath(os.path.join(self._base_path, object_key))
+        if not os.path.commonpath([full_path, self._base_path]) == self._base_path:
+            raise ValueError(f"Path traversal detected: {object_key}")
+        return full_path
 
     async def save(self, object_key: str, data: bytes, content_type: str = "application/octet-stream"):
         """保存文件"""

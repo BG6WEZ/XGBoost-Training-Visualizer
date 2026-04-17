@@ -3,6 +3,7 @@ import { BrowserRouter } from 'react-router-dom'
 import { useState } from 'react'
 import { AppLayout } from '../components/layout/AppLayout'
 import { Router } from '../router'
+import { AuthProvider } from '../contexts/AuthContext'
 
 function App() {
   const [queryClient] = useState(() => new QueryClient({
@@ -17,11 +18,13 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AppLayout>
-          <Router />
-        </AppLayout>
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppLayout>
+            <Router />
+          </AppLayout>
+        </BrowserRouter>
+      </AuthProvider>
     </QueryClientProvider>
   )
 }

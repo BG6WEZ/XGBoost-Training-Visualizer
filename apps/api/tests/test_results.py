@@ -130,7 +130,8 @@ class TestResultsEndpoints:
                 "config": {
                     "task_type": "regression",
                     "test_size": 0.2,
-                    "xgboost_params": {"n_estimators": 10}
+                    "xgboost_params": {"n_estimators": 100, "learning_rate": 0.1},
+                    "early_stopping_rounds": 5
                 }
             }
         )
@@ -915,3 +916,241 @@ class TestWorkerAPIEndpointIntegration:
             assert async_task_result["storage_type"] == "local"
             assert async_task_result["object_key"].startswith("preprocessing/")
             assert async_task_result["file_size"] > 0
+
+
+class TestPredictionAnalysis:
+    """
+    P1-T10: 预测分析接口测试
+    
+    测试预测 vs 实际散点图、残差分布图、残差摘要等数据返回
+    残差定义: residual = actual - predicted
+    """
+
+    @pytest.mark.asyncio
+    async def test_prediction_analysis_unavailable_no_prediction_data(self, client, sample_csv_file, db_session):
+        """
+        测试预测分析不可用 - 缺少预测数据
+        
+        当训练产物缺少逐样本预测数据时，应返回明确的降级原因
+        """
+        from app.services.storage import init_storage_service, StorageConfig
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_config = StorageConfig(
+                storage_type="local",
+                local_base_path=tmpdir
+            )
+            await init_storage_service(storage_config)
+
+            dataset_response = await client.post(
+                "/api/datasets/",
+                json={
+                    "name": "预测分析测试数据集",
+                    "files": [{
+                        "file_path": sample_csv_file,
+                        "file_name": "test.csv",
+                        "role": "primary",
+                        "row_count": 100,
+                        "column_count": 3,
+                        "file_size": 1024,
+                    }],
+                }
+            )
+            dataset_id = dataset_response.json()["id"]
+
+            exp_response = await client.post(
+                "/api/experiments/",
+                json={
+                    "name": "预测分析测试实验",
+                    "dataset_id": dataset_id,
+                    "config": {"task_type": "regression"}
+                }
+            )
+            experiment_id = exp_response.json()["id"]
+
+            from sqlalchemy import select
+            exp_result = await db_session.execute(
+                select(Experiment).where(Experiment.id == uuid.UUID(experiment_id))
+            )
+            exp = exp_result.scalar_one()
+            exp.status = ExperimentStatus.completed.value
+            await db_session.flush()
+
+            response = await client.get(f"/api/results/{experiment_id}/prediction-analysis")
+
+            assert response.status_code == 200
+            data = response.json()
+
+            assert data["experiment_id"] == experiment_id
+            assert data["analysis_available"] is False
+            assert data["analysis_unavailable_reason"] is not None
+            assert "缺少逐样本预测工件" in data["analysis_unavailable_reason"]
+            assert data["residual_definition"] == "residual = actual - predicted"
+
+    @pytest.mark.asyncio
+    async def test_prediction_analysis_happy_path(self, client, sample_csv_file, db_session):
+        """
+        测试预测分析 - 正常返回
+        
+        当预测数据存在时，应返回完整的分析数据
+        """
+        from app.services.storage import init_storage_service, StorageConfig, get_storage_service
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_config = StorageConfig(
+                storage_type="local",
+                local_base_path=tmpdir
+            )
+            await init_storage_service(storage_config)
+
+            # 创建数据集和实验
+            dataset_response = await client.post(
+                "/api/datasets/",
+                json={
+                    "name": "预测分析Happy Path测试数据集",
+                    "files": [{
+                        "file_path": sample_csv_file,
+                        "file_name": "test.csv",
+                        "role": "primary",
+                        "row_count": 100,
+                        "column_count": 3,
+                        "file_size": 1024,
+                    }],
+                }
+            )
+            dataset_id = dataset_response.json()["id"]
+
+            exp_response = await client.post(
+                "/api/experiments/",
+                json={
+                    "name": "预测分析Happy Path测试实验",
+                    "dataset_id": dataset_id,
+                    "config": {"task_type": "regression"}
+                }
+            )
+            experiment_id = exp_response.json()["id"]
+
+            # 更新实验状态为完成
+            from sqlalchemy import select
+            exp_result = await db_session.execute(
+                select(Experiment).where(Experiment.id == uuid.UUID(experiment_id))
+            )
+            exp = exp_result.scalar_one()
+            exp.status = ExperimentStatus.completed.value
+            await db_session.flush()
+
+            # 保存预测数据
+            storage = get_storage_service()
+            prediction_data = {
+                "experiment_id": experiment_id,
+                "validation": {
+                    "actual_values": [10.0, 20.0, 30.0, 40.0, 50.0],
+                    "predicted_values": [11.0, 19.0, 31.0, 39.0, 51.0],
+                    "residual_values": [-1.0, 1.0, -1.0, 1.0, -1.0],  # actual - predicted
+                    "sample_count": 5
+                }
+            }
+            prediction_data_bytes = json.dumps(prediction_data).encode('utf-8')
+            await storage.save_prediction_data(experiment_id, prediction_data_bytes)
+
+            # 获取预测分析
+            response = await client.get(f"/api/results/{experiment_id}/prediction-analysis")
+
+            assert response.status_code == 200
+            data = response.json()
+
+            # 验证分析数据可用
+            assert data["experiment_id"] == experiment_id
+            assert data["analysis_available"] is True
+            assert data["data"] is not None
+            assert data["residual_definition"] == "residual = actual - predicted"
+
+            # 验证数据结构
+            analysis_data = data["data"]
+            assert analysis_data["sample_count"] == 5
+            assert len(analysis_data["actual_values"]) == 5
+            assert len(analysis_data["predicted_values"]) == 5
+            assert len(analysis_data["residual_values"]) == 5
+
+            # 验证残差摘要
+            summary = analysis_data["residual_summary"]
+            assert "mean" in summary
+            assert "std" in summary
+            assert "min" in summary
+            assert "max" in summary
+            assert "p50" in summary
+            assert "p95" in summary
+
+            # 验证残差计算正确性
+            # residual = actual - predicted
+            # [10-11, 20-19, 30-31, 40-39, 50-51] = [-1, 1, -1, 1, -1]
+            assert summary["mean"] == pytest.approx(-0.2, rel=0.01)
+            assert summary["min"] == pytest.approx(-1.0, rel=0.01)
+            assert summary["max"] == pytest.approx(1.0, rel=0.01)
+
+            # 验证散点数据
+            assert len(analysis_data["prediction_scatter_points"]) == 5
+            assert len(analysis_data["residual_histogram_bins"]) == 20  # 默认 20 bins
+            assert len(analysis_data["residual_scatter_points"]) == 5
+
+    @pytest.mark.asyncio
+    async def test_prediction_analysis_incomplete_experiment(self, client, sample_csv_file, db_session):
+        """
+        测试预测分析 - 实验未完成
+        
+        当实验状态不是 completed 时，应返回相应原因
+        """
+        # 创建数据集和实验
+        dataset_response = await client.post(
+            "/api/datasets/",
+            json={
+                "name": "未完成实验测试数据集",
+                "files": [{
+                    "file_path": sample_csv_file,
+                    "file_name": "test.csv",
+                    "role": "primary",
+                    "row_count": 100,
+                    "column_count": 3,
+                    "file_size": 1024,
+                }],
+            }
+        )
+        dataset_id = dataset_response.json()["id"]
+
+        exp_response = await client.post(
+            "/api/experiments/",
+            json={
+                "name": "未完成实验测试",
+                "dataset_id": dataset_id,
+                "config": {"task_type": "regression"}
+            }
+        )
+        experiment_id = exp_response.json()["id"]
+
+        # 实验状态保持 pending
+        response = await client.get(f"/api/results/{experiment_id}/prediction-analysis")
+
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["analysis_available"] is False
+        assert "尚未完成训练" in data["analysis_unavailable_reason"]
+
+    @pytest.mark.asyncio
+    async def test_prediction_analysis_invalid_experiment_id(self, client):
+        """
+        测试预测分析 - 无效的实验 ID
+        """
+        response = await client.get("/api/results/invalid-uuid/prediction-analysis")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_prediction_analysis_nonexistent_experiment(self, client):
+        """
+        测试预测分析 - 不存在的实验
+        """
+        fake_id = str(uuid.uuid4())
+        response = await client.get(f"/api/results/{fake_id}/prediction-analysis")
+        assert response.status_code == 404

@@ -1,8 +1,8 @@
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Play, Trash2, Loader2, Split } from 'lucide-react'
-import { datasetsApi } from '../lib/api'
-import { useState } from 'react'
+import { ArrowLeft, Play, Trash2, Loader2, Split, RefreshCw, CheckCircle, XCircle, BarChart3 } from 'lucide-react'
+import { datasetsApi, PreprocessingRequest, FeatureEngineeringRequest, TaskStatus } from '../lib/api'
+import { useState, useEffect } from 'react'
 
 export function DatasetDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -12,11 +12,71 @@ export function DatasetDetailPage() {
   const [timeColumn, setTimeColumn] = useState('')
   const [trainEndDate, setTrainEndDate] = useState('')
 
+  // 预处理任务状态
+  const [preprocessConfig, setPreprocessConfig] = useState<PreprocessingRequest>({
+    missing_value_strategy: 'mean_fill',
+    encoding_strategy: 'one_hot',
+    target_columns: [],
+  })
+  const [preprocessTaskId, setPreprocessTaskId] = useState<string>('')
+  const [preprocessTaskStatus, setPreprocessTaskStatus] = useState<TaskStatus | null>(null)
+  const [preprocessPolling, setPreprocessPolling] = useState<NodeJS.Timeout | null>(null)
+  const [preprocessError, setPreprocessError] = useState<string>('')
+
+  // 特征工程任务状态
+  const [featureConfig, setFeatureConfig] = useState<FeatureEngineeringRequest>({
+    time_features: {
+      enabled: false,
+      features: ['hour', 'dayofweek', 'month'],
+      column: '',
+    },
+    lag_features: {
+      enabled: false,
+      lags: [1, 6, 12, 24],
+      columns: [],
+    },
+    rolling_features: {
+      enabled: false,
+      windows: [3, 6, 24],
+      columns: [],
+      functions: ['mean', 'std'],
+    },
+  })
+  const [featureTaskId, setFeatureTaskId] = useState<string>('')
+  const [featureTaskStatus, setFeatureTaskStatus] = useState<TaskStatus | null>(null)
+  const [featurePolling, setFeaturePolling] = useState<NodeJS.Timeout | null>(null)
+  const [featureError, setFeatureError] = useState<string>('')
+
   const { data: dataset, isLoading } = useQuery({
     queryKey: ['dataset', id],
     queryFn: () => datasetsApi.get(id!),
     enabled: !!id,
   })
+
+  // 当 dataset 加载完成后，更新配置默认值
+  useEffect(() => {
+    if (dataset) {
+      setPreprocessConfig(prev => ({
+        ...prev,
+        target_columns: dataset.target_column ? [dataset.target_column] : [],
+      }))
+      setFeatureConfig(prev => ({
+        ...prev,
+        time_features: {
+          ...prev.time_features,
+          column: dataset.time_column || '',
+        },
+        lag_features: {
+          ...prev.lag_features,
+          columns: dataset.target_column ? [dataset.target_column] : [],
+        },
+        rolling_features: {
+          ...prev.rolling_features,
+          columns: dataset.target_column ? [dataset.target_column] : [],
+        },
+      }))
+    }
+  }, [dataset])
 
   const { data: preview } = useQuery({
     queryKey: ['dataset-preview', id],
@@ -43,6 +103,132 @@ export function DatasetDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['datasets'] })
     },
   })
+
+  // 预处理任务 mutation
+  const preprocessMutation = useMutation({
+    mutationFn: () => datasetsApi.preprocess(id!, preprocessConfig),
+    onSuccess: (data) => {
+      setPreprocessTaskId(data.task_id)
+      // 开始轮询任务状态
+      startPreprocessPolling(data.task_id)
+    },
+    onError: (error: Error) => {
+      alert(`预处理任务提交失败: ${error.message}`)
+    },
+  })
+
+  // 特征工程任务 mutation
+  const featureMutation = useMutation({
+    mutationFn: () => datasetsApi.featureEngineering(id!, featureConfig),
+    onSuccess: (data) => {
+      setFeatureTaskId(data.task_id)
+      // 开始轮询任务状态
+      startFeaturePolling(data.task_id)
+    },
+    onError: (error: Error) => {
+      alert(`特征工程任务提交失败: ${error.message}`)
+    },
+  })
+
+  // 开始预处理任务轮询
+  const startPreprocessPolling = (taskId: string) => {
+    // 清除之前的轮询
+    if (preprocessPolling) {
+      clearInterval(preprocessPolling)
+    }
+
+    // 立即获取一次状态
+    fetchPreprocessTaskStatus(taskId)
+
+    // 设置轮询
+    const interval = setInterval(() => {
+      fetchPreprocessTaskStatus(taskId)
+    }, 2000)
+
+    setPreprocessPolling(interval)
+  }
+
+  // 获取预处理任务状态
+  const fetchPreprocessTaskStatus = async (taskId: string) => {
+    try {
+      const status = await datasetsApi.getTask(taskId)
+      setPreprocessTaskStatus(status)
+      setPreprocessError('')
+
+      // 如果任务完成或失败，停止轮询
+      if (status.status === 'completed' || status.status === 'failed') {
+        if (preprocessPolling) {
+          clearInterval(preprocessPolling)
+          setPreprocessPolling(null)
+        }
+      }
+    } catch (error: any) {
+      console.error('获取预处理任务状态失败:', error)
+      const errorMessage = error.message || '轮询失败，请稍后重试'
+      setPreprocessError(errorMessage)
+      // 出现错误后停止轮询
+      if (preprocessPolling) {
+        clearInterval(preprocessPolling)
+        setPreprocessPolling(null)
+      }
+    }
+  }
+
+  // 开始特征工程任务轮询
+  const startFeaturePolling = (taskId: string) => {
+    // 清除之前的轮询
+    if (featurePolling) {
+      clearInterval(featurePolling)
+    }
+
+    // 立即获取一次状态
+    fetchFeatureTaskStatus(taskId)
+
+    // 设置轮询
+    const interval = setInterval(() => {
+      fetchFeatureTaskStatus(taskId)
+    }, 2000)
+
+    setFeaturePolling(interval)
+  }
+
+  // 获取特征工程任务状态
+  const fetchFeatureTaskStatus = async (taskId: string) => {
+    try {
+      const status = await datasetsApi.getTask(taskId)
+      setFeatureTaskStatus(status)
+      setFeatureError('')
+
+      // 如果任务完成或失败，停止轮询
+      if (status.status === 'completed' || status.status === 'failed') {
+        if (featurePolling) {
+          clearInterval(featurePolling)
+          setFeaturePolling(null)
+        }
+      }
+    } catch (error: any) {
+      console.error('获取特征工程任务状态失败:', error)
+      const errorMessage = error.message || '轮询失败，请稍后重试'
+      setFeatureError(errorMessage)
+      // 出现错误后停止轮询
+      if (featurePolling) {
+        clearInterval(featurePolling)
+        setFeaturePolling(null)
+      }
+    }
+  }
+
+  // 清理轮询
+  useEffect(() => {
+    return () => {
+      if (preprocessPolling) {
+        clearInterval(preprocessPolling)
+      }
+      if (featurePolling) {
+        clearInterval(featurePolling)
+      }
+    }
+  }, [preprocessPolling, featurePolling])
 
   if (isLoading) {
     return (
@@ -81,14 +267,23 @@ export function DatasetDetailPage() {
             )}
           </div>
         </div>
-        <button
-          onClick={() => deleteMutation.mutate()}
-          disabled={deleteMutation.isPending}
-          className="flex items-center px-3 py-2 text-sm text-red-600 border border-red-600 rounded-lg hover:bg-red-50"
-        >
-          <Trash2 className="w-4 h-4 mr-2" />
-          删除
-        </button>
+        <div className="flex items-center space-x-3">
+          <Link
+            to={`/assets/${id}/quality`}
+            className="flex items-center px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+          >
+            <BarChart3 className="w-4 h-4 mr-2" />
+            查看质量报告
+          </Link>
+          <button
+            onClick={() => deleteMutation.mutate()}
+            disabled={deleteMutation.isPending}
+            className="flex items-center px-3 py-2 text-sm text-red-600 border border-red-600 rounded-lg hover:bg-red-50"
+          >
+            <Trash2 className="w-4 h-4 mr-2" />
+            删除
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -270,6 +465,372 @@ export function DatasetDetailPage() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 预处理任务 */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">预处理任务</h3>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                缺失值处理策略
+              </label>
+              <select
+                value={preprocessConfig.missing_value_strategy}
+                onChange={(e) => setPreprocessConfig(prev => ({
+                  ...prev,
+                  missing_value_strategy: e.target.value as 'forward_fill' | 'mean_fill' | 'drop_rows'
+                }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2"
+              >
+                <option value="forward_fill">前向填充</option>
+                <option value="mean_fill">均值填充</option>
+                <option value="drop_rows">删除行</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                编码策略
+              </label>
+              <select
+                value={preprocessConfig.encoding_strategy}
+                onChange={(e) => setPreprocessConfig(prev => ({
+                  ...prev,
+                  encoding_strategy: e.target.value as 'one_hot' | 'label_encoding'
+                }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2"
+              >
+                <option value="one_hot">One-Hot 编码</option>
+                <option value="label_encoding">标签编码</option>
+              </select>
+            </div>
+          </div>
+
+          <button
+            onClick={() => preprocessMutation.mutate()}
+            disabled={preprocessMutation.isPending}
+            className="flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {preprocessMutation.isPending ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4 mr-2" />
+            )}
+            执行预处理
+          </button>
+
+          {preprocessTaskId && (
+            <div className="mt-4">
+              <p className="text-sm font-medium text-gray-700 mb-2">
+                任务 ID: {preprocessTaskId}
+              </p>
+              {preprocessError && (
+                <div className="p-4 rounded-lg bg-red-50 mb-4">
+                  <div className="flex items-center">
+                    <XCircle className="w-5 h-5 text-red-500 mr-2" />
+                    <span className="text-sm font-medium text-red-700">
+                      轮询错误
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-red-600">
+                    {preprocessError}
+                  </p>
+                </div>
+              )}
+              {preprocessTaskStatus && (
+                <div className={`p-4 rounded-lg ${preprocessTaskStatus.status === 'completed' ? 'bg-green-50' : preprocessTaskStatus.status === 'failed' ? 'bg-red-50' : 'bg-blue-50'}`}>
+                  <div className="flex items-center">
+                    {preprocessTaskStatus.status === 'completed' && (
+                      <CheckCircle className="w-5 h-5 text-green-500 mr-2" />
+                    )}
+                    {preprocessTaskStatus.status === 'failed' && (
+                      <XCircle className="w-5 h-5 text-red-500 mr-2" />
+                    )}
+                    {preprocessTaskStatus.status === 'queued' && (
+                      <Loader2 className="w-5 h-5 text-blue-500 mr-2" />
+                    )}
+                    {preprocessTaskStatus.status === 'running' && (
+                      <Loader2 className="w-5 h-5 text-blue-500 mr-2 animate-spin" />
+                    )}
+                    <span className="text-sm font-medium">
+                      状态: {preprocessTaskStatus.status}
+                    </span>
+                  </div>
+                  {preprocessTaskStatus.error_message && (
+                    <p className="mt-2 text-sm text-red-600">
+                      错误: {preprocessTaskStatus.error_message}
+                    </p>
+                  )}
+                  {preprocessTaskStatus.result && (
+                    <p className="mt-2 text-sm text-green-600">
+                      结果: 处理完成
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 特征工程任务 */}
+      <div className="bg-white border border-gray-200 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">特征工程任务</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                checked={featureConfig.time_features?.enabled}
+                onChange={(e) => setFeatureConfig(prev => ({
+                  ...prev,
+                  time_features: {
+                    ...prev.time_features!,
+                    enabled: e.target.checked
+                  }
+                }))}
+                className="mr-2"
+              />
+              时间特征
+            </label>
+            {featureConfig.time_features?.enabled && (
+              <div className="ml-6 mt-2 space-y-2">
+                <select
+                  value={featureConfig.time_features.column}
+                  onChange={(e) => setFeatureConfig(prev => ({
+                    ...prev,
+                    time_features: {
+                      ...prev.time_features!,
+                      column: e.target.value
+                    }
+                  }))}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                >
+                  <option value="">选择时间列</option>
+                  {columnsInfo
+                    .filter(c => c.is_time_candidate || c.is_datetime)
+                    .map(col => (
+                      <option key={col.name} value={col.name}>{col.name}</option>
+                    ))}
+                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['hour', 'dayofweek', 'month', 'is_weekend'] as const).map(feature => (
+                    <label key={feature} className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={featureConfig.time_features.features.includes(feature)}
+                        onChange={(e) => setFeatureConfig(prev => ({
+                          ...prev,
+                          time_features: {
+                            ...prev.time_features,
+                            features: e.target.checked
+                              ? [...prev.time_features.features, feature]
+                              : prev.time_features.features.filter(f => f !== feature)
+                          }
+                        }))}
+                        className="mr-1"
+                      />
+                      {feature === 'dayofweek' ? '星期' : feature === 'is_weekend' ? '是否周末' : feature}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                checked={featureConfig.lag_features?.enabled}
+                onChange={(e) => setFeatureConfig(prev => ({
+                  ...prev,
+                  lag_features: {
+                    ...prev.lag_features!,
+                    enabled: e.target.checked
+                  }
+                }))}
+                className="mr-2"
+              />
+              滞后特征
+            </label>
+            {featureConfig.lag_features?.enabled && (
+              <div className="ml-6 mt-2 space-y-2">
+                <input
+                  type="text"
+                  value={featureConfig.lag_features.lags.join(',')}
+                  onChange={(e) => setFeatureConfig(prev => ({
+                    ...prev,
+                    lag_features: {
+                      ...prev.lag_features!,
+                      lags: e.target.value.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n))
+                    }
+                  }))}
+                  placeholder="输入滞后阶数，如: 1,2,3"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                />
+                <select
+                  multiple
+                  value={featureConfig.lag_features.columns}
+                  onChange={(e) => setFeatureConfig(prev => ({
+                    ...prev,
+                    lag_features: {
+                      ...prev.lag_features!,
+                      columns: Array.from(e.target.selectedOptions, option => option.value)
+                    }
+                  }))}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                >
+                  {columnsInfo
+                    .filter(c => c.is_numeric)
+                    .map(col => (
+                      <option key={col.name} value={col.name}>{col.name}</option>
+                    ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                checked={featureConfig.rolling_features?.enabled}
+                onChange={(e) => setFeatureConfig(prev => ({
+                  ...prev,
+                  rolling_features: {
+                    ...prev.rolling_features!,
+                    enabled: e.target.checked
+                  }
+                }))}
+                className="mr-2"
+              />
+              滚动特征
+            </label>
+            {featureConfig.rolling_features?.enabled && (
+              <div className="ml-6 mt-2 space-y-2">
+                <input
+                  type="text"
+                  value={featureConfig.rolling_features.windows.join(',')}
+                  onChange={(e) => setFeatureConfig(prev => ({
+                    ...prev,
+                    rolling_features: {
+                      ...prev.rolling_features!,
+                      windows: e.target.value.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n))
+                    }
+                  }))}
+                  placeholder="输入窗口大小，如: 7,14,30"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                />
+                <select
+                  multiple
+                  value={featureConfig.rolling_features.columns}
+                  onChange={(e) => setFeatureConfig(prev => ({
+                    ...prev,
+                    rolling_features: {
+                      ...prev.rolling_features!,
+                      columns: Array.from(e.target.selectedOptions, option => option.value)
+                    }
+                  }))}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                >
+                  {columnsInfo
+                    .filter(c => c.is_numeric)
+                    .map(col => (
+                      <option key={col.name} value={col.name}>{col.name}</option>
+                    ))}
+                </select>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['mean', 'std', 'min', 'max', 'sum'] as const).map(func => (
+                    <label key={func} className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={featureConfig.rolling_features.functions.includes(func)}
+                        onChange={(e) => setFeatureConfig(prev => ({
+                          ...prev,
+                          rolling_features: {
+                            ...prev.rolling_features,
+                            functions: e.target.checked
+                              ? [...prev.rolling_features.functions, func]
+                              : prev.rolling_features.functions.filter(f => f !== func)
+                          }
+                        }))}
+                        className="mr-1"
+                      />
+                      {func}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => featureMutation.mutate()}
+            disabled={featureMutation.isPending}
+            className="flex items-center px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50"
+          >
+            {featureMutation.isPending ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4 mr-2" />
+            )}
+            执行特征工程
+          </button>
+
+          {featureTaskId && (
+            <div className="mt-4">
+              <p className="text-sm font-medium text-gray-700 mb-2">
+                任务 ID: {featureTaskId}
+              </p>
+              {featureError && (
+                <div className="p-4 rounded-lg bg-red-50 mb-4">
+                  <div className="flex items-center">
+                    <XCircle className="w-5 h-5 text-red-500 mr-2" />
+                    <span className="text-sm font-medium text-red-700">
+                      轮询错误
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-red-600">
+                    {featureError}
+                  </p>
+                </div>
+              )}
+              {featureTaskStatus && (
+                <div className={`p-4 rounded-lg ${featureTaskStatus.status === 'completed' ? 'bg-green-50' : featureTaskStatus.status === 'failed' ? 'bg-red-50' : 'bg-blue-50'}`}>
+                  <div className="flex items-center">
+                    {featureTaskStatus.status === 'completed' && (
+                      <CheckCircle className="w-5 h-5 text-green-500 mr-2" />
+                    )}
+                    {featureTaskStatus.status === 'failed' && (
+                      <XCircle className="w-5 h-5 text-red-500 mr-2" />
+                    )}
+                    {featureTaskStatus.status === 'queued' && (
+                      <Loader2 className="w-5 h-5 text-blue-500 mr-2" />
+                    )}
+                    {featureTaskStatus.status === 'running' && (
+                      <Loader2 className="w-5 h-5 text-blue-500 mr-2 animate-spin" />
+                    )}
+                    <span className="text-sm font-medium">
+                      状态: {featureTaskStatus.status}
+                    </span>
+                  </div>
+                  {featureTaskStatus.error_message && (
+                    <p className="mt-2 text-sm text-red-600">
+                      错误: {featureTaskStatus.error_message}
+                    </p>
+                  )}
+                  {featureTaskStatus.result && (
+                    <p className="mt-2 text-sm text-green-600">
+                      结果: 处理完成
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

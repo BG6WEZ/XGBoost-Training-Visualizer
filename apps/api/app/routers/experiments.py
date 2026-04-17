@@ -12,10 +12,78 @@ from app.schemas.experiment import (
     ExperimentResponse,
     ExperimentUpdate,
     ExperimentListResponse,
+    ExperimentFilterParams,
+    ParamTemplatesResponse,
+    PARAM_TEMPLATES,
+    QueueStatsResponse,
 )
 from app.services.queue import QueueService, TrainingTask, get_queue_service
+from app.services.parameter_validation import ParameterValidationService
 
 router = APIRouter()
+
+
+def clean_tags(tags: Optional[List[str]]) -> List[str]:
+    """
+    清洗标签列表
+    
+    处理规则：
+    1. 去掉空字符串
+    2. 去掉首尾空格
+    3. 去重
+    4. 保持原始顺序
+    """
+    if not tags:
+        return []
+    
+    seen = set()
+    cleaned = []
+    for tag in tags:
+        if not tag:
+            continue
+        stripped = tag.strip()
+        if not stripped:
+            continue
+        if stripped not in seen:
+            seen.add(stripped)
+            cleaned.append(stripped)
+    
+    return cleaned
+
+
+class ParameterValidationError(HTTPException):
+    """参数校验错误"""
+    def __init__(self, field_errors: list):
+        self.field_errors = field_errors
+        super().__init__(
+            status_code=422,
+            detail={
+                "error_code": "PARAM_CONFLICT",
+                "message": "训练参数存在冲突",
+                "field_errors": [
+                    {
+                        "fields": e.fields,
+                        "rule": e.rule,
+                        "current": e.current,
+                        "suggestion": e.suggestion
+                    }
+                    for e in field_errors
+                ]
+            }
+        )
+
+
+@router.get("/param-templates", response_model=ParamTemplatesResponse)
+async def get_param_templates():
+    """
+    获取参数模板
+    
+    返回三套预设参数模板：
+    - conservative: 保守模板，适合小数据、防过拟合
+    - balanced: 平衡模板，通用默认值
+    - aggressive: 激进模板，快速探索
+    """
+    return ParamTemplatesResponse(templates=PARAM_TEMPLATES)
 
 
 def _build_experiment_response(experiment: Experiment) -> dict:
@@ -27,6 +95,7 @@ def _build_experiment_response(experiment: Experiment) -> dict:
         "dataset_id": str(experiment.dataset_id),
         "subset_id": str(experiment.subset_id) if experiment.subset_id else None,
         "config": experiment.config,
+        "tags": experiment.tags if experiment.tags else [],
         "status": experiment.status,
         "error_message": experiment.error_message,
         "created_at": experiment.created_at,
@@ -41,17 +110,57 @@ async def list_experiments(
     skip: int = 0,
     limit: int = 20,
     status: Optional[str] = None,
+    tags: Optional[str] = None,
+    tag_match_mode: str = "any",
+    created_after: Optional[datetime] = None,
+    created_before: Optional[datetime] = None,
+    name_contains: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    """获取实验列表"""
+    """
+    获取实验列表
+    
+    支持以下筛选参数：
+    - status: 按状态筛选
+    - tags: 按标签筛选（逗号分隔）
+    - tag_match_mode: 标签匹配模式（any=任一匹配, all=全部匹配）
+    - created_after: 创建时间起始
+    - created_before: 创建时间截止
+    - name_contains: 名称模糊搜索
+    """
     query = select(Experiment).order_by(Experiment.created_at.desc())
 
     if status:
         query = query.where(Experiment.status == status)
 
+    if created_after:
+        query = query.where(Experiment.created_at >= created_after)
+
+    if created_before:
+        query = query.where(Experiment.created_at <= created_before)
+
+    if name_contains:
+        query = query.where(Experiment.name.ilike(f"%{name_contains}%"))
+
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
     experiments = result.scalars().all()
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+
+    filtered_experiments = []
+    for e in experiments:
+        exp_tags = e.tags if e.tags else []
+        
+        if tag_list:
+            if tag_match_mode == "all":
+                if not all(tag in exp_tags for tag in tag_list):
+                    continue
+            else:
+                if not any(tag in exp_tags for tag in tag_list):
+                    continue
+        
+        filtered_experiments.append(e)
 
     return [
         {
@@ -59,10 +168,11 @@ async def list_experiments(
             "name": e.name,
             "description": e.description,
             "dataset_id": str(e.dataset_id),
+            "tags": e.tags if e.tags else [],
             "status": e.status,
             "created_at": e.created_at,
         }
-        for e in experiments
+        for e in filtered_experiments
     ]
 
 
@@ -111,6 +221,22 @@ async def create_experiment(
     config_dict = data.config.model_dump()
     if "xgboost_params" in config_dict and "lambda_" in config_dict["xgboost_params"]:
         config_dict["xgboost_params"]["lambda"] = config_dict["xgboost_params"].pop("lambda_")
+    
+    # 参数校验
+    xgboost_params = config_dict.get('xgboost_params', {})
+    validation_params = {
+        'learning_rate': xgboost_params.get('learning_rate', 0.1),
+        'max_depth': xgboost_params.get('max_depth', 6),
+        'n_estimators': xgboost_params.get('n_estimators', 100),
+        'subsample': xgboost_params.get('subsample', 1.0),
+        'colsample_bytree': xgboost_params.get('colsample_bytree', 1.0),
+        'early_stopping_rounds': config_dict.get('early_stopping_rounds'),
+        'min_child_weight': xgboost_params.get('min_child_weight', 1.0),
+    }
+    
+    validation_result = ParameterValidationService.validate_training_params(**validation_params)
+    if not validation_result.valid:
+        raise ParameterValidationError(validation_result.field_errors)
 
     # 创建实验
     experiment = Experiment(
@@ -119,6 +245,7 @@ async def create_experiment(
         dataset_id=dataset_uuid,
         subset_id=subset_uuid,
         config=config_dict,
+        tags=clean_tags(data.tags),
         status=ExperimentStatus.pending.value,
     )
     db.add(experiment)
@@ -281,6 +408,8 @@ async def update_experiment(
         experiment.description = data.description
     if data.config:
         experiment.config = data.config.model_dump()
+    if data.tags is not None:
+        experiment.tags = clean_tags(data.tags)
 
     experiment.updated_at = datetime.utcnow()
     await db.commit()
@@ -316,3 +445,78 @@ async def delete_experiment(
     await db.commit()
 
     return {"status": "deleted", "id": experiment_id}
+
+
+@router.get("/queue/stats", response_model=QueueStatsResponse)
+async def get_queue_stats(
+    queue: QueueService = Depends(get_queue_service)
+):
+    """
+    获取队列统计信息
+    
+    返回：
+    - running_count: 当前运行中的任务数
+    - queued_count: 当前排队中的任务数
+    - max_concurrency: 并发上限
+    - available_slots: 可用槽位数
+    - running_experiments: 运行中的实验 ID 列表
+    - queue_positions: 排队实验的位置映射
+    """
+    stats = await queue.get_queue_stats()
+    running_experiments = await queue.get_running_tasks()
+    queue_positions = await queue.get_all_queue_positions()
+    
+    return QueueStatsResponse(
+        running_count=stats.running_count,
+        queued_count=stats.queued_count,
+        max_concurrency=stats.max_concurrency,
+        available_slots=stats.available_slots,
+        running_experiments=running_experiments,
+        queue_positions=queue_positions,
+    )
+
+
+@router.get("/with-queue-info", response_model=List[dict])
+async def list_experiments_with_queue_info(
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    queue: QueueService = Depends(get_queue_service),
+):
+    """
+    获取带队列信息的实验列表
+    
+    每个实验包含 queue_position 字段：
+    - running 状态：queue_position 为 null
+    - queued 状态：queue_position 为排队位置（从 1 开始）
+    - 其他状态：queue_position 为 null
+    """
+    query = select(Experiment).order_by(Experiment.created_at.desc())
+    
+    if status:
+        query = query.where(Experiment.status == status)
+    
+    result = await db.execute(query)
+    experiments = result.scalars().all()
+    
+    queue_positions = await queue.get_all_queue_positions()
+    
+    response = []
+    for e in experiments:
+        exp_dict = {
+            "id": str(e.id),
+            "name": e.name,
+            "description": e.description,
+            "dataset_id": str(e.dataset_id),
+            "status": e.status,
+            "created_at": e.created_at,
+            "queue_position": None,
+        }
+        
+        if e.status == ExperimentStatus.queued.value:
+            exp_dict["queue_position"] = queue_positions.get(str(e.id))
+        elif e.status == ExperimentStatus.running.value:
+            exp_dict["queue_position"] = None
+        
+        response.append(exp_dict)
+    
+    return response

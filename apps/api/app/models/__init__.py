@@ -11,6 +11,10 @@ from app.models.models import (
     FeatureImportance,
     FileRole,
     AsyncTask,
+    ModelVersion,
+    User,
+    UserRole,
+    UserStatus,
 )
 
 __all__ = [
@@ -26,4 +30,8 @@ __all__ = [
     "FeatureImportance",
     "FileRole",
     "AsyncTask",
+    "ModelVersion",
+    "User",
+    "UserRole",
+    "UserStatus",
 ]

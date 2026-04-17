@@ -39,8 +39,8 @@ class TestQueueHealthCheck:
                         with patch('scripts.e2e_validation.create_experiment', return_value="exp-id"):
                             with patch('scripts.e2e_validation.start_training', return_value={"queue_position": 0}):
                                 with patch('scripts.e2e_validation.wait_for_completion', return_value=True):
-                                    with patch('scripts.e2e_validation.get_results', return_value={"model": {}}):
-                                        with patch('scripts.e2e_validation.download_model', return_value=b'{"learner": {}}'):
+                                    with patch('scripts.e2e_validation.get_results', return_value={"model": {"model_type": "xgboost"}}):
+                                        with patch('scripts.e2e_validation.download_model', return_value=b'{"learner": {}, "version": "1.0", "feature_names": ["a", "b"], "target": "y"}'):
                                             result = await run_e2e_validation("http://localhost:8000", 120, True)
         
         assert result.success == True
@@ -100,8 +100,8 @@ class TestQueueHealthCheck:
                         with patch('scripts.e2e_validation.create_experiment', return_value="exp-id"):
                             with patch('scripts.e2e_validation.start_training', return_value={"queue_position": 0}):
                                 with patch('scripts.e2e_validation.wait_for_completion', return_value=True):
-                                    with patch('scripts.e2e_validation.get_results', return_value={"model": {}}):
-                                        with patch('scripts.e2e_validation.download_model', return_value=b'{"learner": {}}'):
+                                    with patch('scripts.e2e_validation.get_results', return_value={"model": {"model_type": "xgboost"}}):
+                                        with patch('scripts.e2e_validation.download_model', return_value=b'{"learner": {}, "version": "1.0", "feature_names": ["a", "b"], "target": "y"}'):
                                             result = await run_e2e_validation("http://localhost:8000", 120, True)
         
         assert result.success == True

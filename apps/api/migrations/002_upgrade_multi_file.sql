@@ -48,7 +48,7 @@ BEGIN
     -- total_file_size
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                    WHERE table_name = 'datasets' AND column_name = 'total_file_size') THEN
-        ALTER TABLE datasets ADD COLUMN total_file_size INTEGER DEFAULT 0;
+        ALTER TABLE datasets ADD COLUMN total_file_size BIGINT DEFAULT 0;
     END IF;
 END $$;
 
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS dataset_files (
     dataset_id UUID NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
     file_path VARCHAR(500) NOT NULL,
     file_name VARCHAR(255) NOT NULL,
-    file_size INTEGER DEFAULT 0,
+    file_size BIGINT DEFAULT 0,
     role VARCHAR(50) DEFAULT 'primary',
     row_count INTEGER DEFAULT 0,
     column_count INTEGER DEFAULT 0,
@@ -152,7 +152,7 @@ BEGIN
     -- file_size
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                    WHERE table_name = 'models' AND column_name = 'file_size') THEN
-        ALTER TABLE models ADD COLUMN file_size INTEGER;
+        ALTER TABLE models ADD COLUMN file_size BIGINT;
     END IF;
 END $$;
 

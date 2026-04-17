@@ -16,21 +16,26 @@ import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import NotSupportedError
 
 from app.config import settings
+from app.logging_config import setup_logging, get_logger
 from app.models import (
     Dataset, DatasetFile, Experiment, Model,
     FeatureImportance, TrainingMetric, TrainingLog,
-    ExperimentStatus, AsyncTask
+    ExperimentStatus, AsyncTask, ModelVersion
 )
 from app.tasks.training import run_training_task, run_preprocessing_task, run_feature_engineering_task
 from app.storage import init_storage_service, get_storage_service
 
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Initialize structured logging
+setup_logging()
+logger = get_logger(__name__)
+
+
+def _is_invalid_cached_statement_error(error: Exception) -> bool:
+    text = str(error)
+    return "InvalidCachedStatementError" in text or "cached statement plan is invalid" in text
 
 
 class TrainingWorker:
@@ -39,12 +44,15 @@ class TrainingWorker:
     TRAINING_QUEUE = "training:queue"
     PREPROCESSING_QUEUE = "preprocessing:queue"
     FEATURE_ENGINEERING_QUEUE = "feature_engineering:queue"
+    RUNNING_TASKS_SET = "training:running"
 
     def __init__(self):
         self.redis: Optional[aioredis.Redis] = None
         self.db_session_maker: Optional[async_sessionmaker] = None
         self.db_engine = None
         self.running = False
+        self.inflight_tasks: dict = {}
+        self.max_concurrency = settings.MAX_CONCURRENT_TRAININGS
 
     async def connect(self):
         """初始化连接"""
@@ -151,11 +159,26 @@ class TrainingWorker:
     async def get_dataset_info(self, dataset_id: str) -> dict:
         """获取数据集信息"""
         async with self.db_session_maker() as db:
-            result = await db.execute(
+            dataset_query = (
                 select(Dataset)
                 .options(selectinload(Dataset.files))
                 .where(Dataset.id == uuid.UUID(dataset_id))
             )
+
+            for attempt in range(2):
+                try:
+                    result = await db.execute(dataset_query)
+                    break
+                except NotSupportedError as e:
+                    if attempt == 0 and _is_invalid_cached_statement_error(e):
+                        logger.warning(
+                            "Detected stale prepared statement cache while querying dataset %s, retrying once...",
+                            dataset_id,
+                        )
+                        await db.rollback()
+                        continue
+                    raise
+
             dataset = result.scalar_one_or_none()
             if not dataset:
                 raise ValueError(f"Dataset not found: {dataset_id}")
@@ -172,13 +195,16 @@ class TrainingWorker:
                 "name": dataset.name
             }
 
-    async def save_training_result(self, experiment_id: str, result: dict):
-        """保存训练结果到数据库（通过存储适配层保存模型）"""
+    async def save_training_result(self, experiment_id: str, result: dict) -> Optional[uuid.UUID]:
+        """保存训练结果到数据库（通过存储适配层保存模型）
+        
+        Returns:
+            model_id: 创建的模型ID，用于后续版本创建
+        """
         storage = get_storage_service()
         model_format = result.get("model_format", "json")
         model_path = result.get("model_path")
 
-        # 通过存储适配层保存模型
         storage_info = None
         if model_path and os.path.exists(model_path):
             storage_info = await storage.save_model_from_path(
@@ -189,7 +215,7 @@ class TrainingWorker:
             logger.info(f"Model saved via storage adapter: {storage_info}")
 
         async with self.db_session_maker() as db:
-            # 保存模型记录
+            model_id = None
             if storage_info:
                 model = Model(
                     experiment_id=uuid.UUID(experiment_id),
@@ -197,13 +223,12 @@ class TrainingWorker:
                     object_key=storage_info["object_key"],
                     format=model_format,
                     file_size=storage_info["file_size"],
-                    # 不填充 file_path：新模型必须通过 storage adapter 读取
-                    # file_path 仅用于历史数据兼容（历史数据无 object_key）
                     metrics=result.get("metrics")
                 )
                 db.add(model)
+                await db.flush()
+                model_id = model.id
 
-            # 保存特征重要性（带排名）
             feature_importance = result.get("feature_importance", [])
             for rank, fi in enumerate(feature_importance, start=1):
                 feature_imp = FeatureImportance(
@@ -214,7 +239,6 @@ class TrainingWorker:
                 )
                 db.add(feature_imp)
 
-            # 保存训练指标
             training_metrics = result.get("training_metrics", [])
             for metric in training_metrics:
                 training_metric = TrainingMetric(
@@ -227,20 +251,96 @@ class TrainingWorker:
 
             await db.commit()
             logger.info(f"Training results saved for {experiment_id}")
+            
+            return model_id
+
+    async def _create_model_version(
+        self,
+        db: AsyncSession,
+        experiment_id: str,
+        result: dict,
+        model_id: Optional[uuid.UUID]
+    ):
+        """自动创建模型版本快照
+        
+        前置条件：实验状态必须为 completed
+        语义：版本创建发生在实验状态进入 completed 之后
+        """
+        exp_result = await db.execute(
+            select(Experiment).where(Experiment.id == uuid.UUID(experiment_id))
+        )
+        experiment = exp_result.scalar_one_or_none()
+        if not experiment:
+            logger.warning(f"Experiment {experiment_id} not found, skipping version creation")
+            return
+
+        # 验证实验状态为 completed（语义闭环）
+        if experiment.status != ExperimentStatus.completed.value:
+            logger.warning(
+                f"Experiment {experiment_id} status is {experiment.status}, "
+                f"not completed, skipping version creation"
+            )
+            return
+
+        version_result = await db.execute(
+            select(ModelVersion).where(ModelVersion.experiment_id == uuid.UUID(experiment_id))
+        )
+        existing_versions = version_result.scalars().all()
+        version_number = self._generate_version_number(len(existing_versions))
+
+        active_result = await db.execute(
+            select(ModelVersion).where(
+                ModelVersion.experiment_id == uuid.UUID(experiment_id),
+                ModelVersion.is_active == 1
+            )
+        )
+        previous_active = active_result.scalar_one_or_none()
+        if previous_active:
+            previous_active.is_active = 0
+
+        version = ModelVersion(
+            experiment_id=uuid.UUID(experiment_id),
+            version_number=version_number,
+            config_snapshot=experiment.config or {},
+            metrics_snapshot=result.get("metrics", {}),
+            tags=[],
+            is_active=1,
+            source_model_id=model_id,
+        )
+        db.add(version)
+        await db.commit()
+
+        logger.info(
+            f"Created model version {version_number} for experiment {experiment_id} "
+            f"(experiment_status={experiment.status})"
+        )
+
+    def _generate_version_number(self, existing_count: int) -> str:
+        """生成版本号 v{major}.{minor}.{patch}"""
+        major = 1
+        minor = existing_count
+        patch = 0
+        return f"v{major}.{minor}.{patch}"
 
     async def run(self):
-        """主循环"""
+        """主循环 - 支持并发训练"""
         await self.connect()
         self.running = True
 
-        logger.info("Worker started, waiting for tasks...")
+        logger.info(f"Worker started with max_concurrency={self.max_concurrency}, waiting for tasks...")
 
         while self.running:
             try:
-                # 同时监听三个队列，优先级：训练 > 预处理 > 特征工程
+                self._cleanup_finished_tasks()
+
+                current_running = len(self.inflight_tasks)
+                if current_running >= self.max_concurrency:
+                    await asyncio.sleep(0.5)
+                    continue
+
                 result = await self.redis.blpop(
                     [self.TRAINING_QUEUE, self.PREPROCESSING_QUEUE, self.FEATURE_ENGINEERING_QUEUE],
-                    timeout=5
+                    timeout=1
                 )
 
                 if result:
@@ -248,11 +348,14 @@ class TrainingWorker:
                     task_data = json.loads(data)
 
                     if queue_name == self.TRAINING_QUEUE:
-                        await self.process_training_task(task_data)
+                        task = asyncio.create_task(self._process_training_task_with_slot(task_data))
+                        experiment_id = task_data.get("experiment_id")
+                        if experiment_id:
+                            self.inflight_tasks[experiment_id] = task
                     elif queue_name == self.PREPROCESSING_QUEUE:
-                        await self.process_preprocessing_task(task_data)
+                        asyncio.create_task(self.process_preprocessing_task(task_data))
                     elif queue_name == self.FEATURE_ENGINEERING_QUEUE:
-                        await self.process_feature_engineering_task(task_data)
+                        asyncio.create_task(self.process_feature_engineering_task(task_data))
 
             except asyncio.CancelledError:
                 break
@@ -260,7 +363,64 @@ class TrainingWorker:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
                 await asyncio.sleep(1)
 
+        if self.inflight_tasks:
+            logger.info(f"Waiting for {len(self.inflight_tasks)} inflight tasks to complete...")
+            await asyncio.gather(*self.inflight_tasks.values(), return_exceptions=True)
+
         logger.info("Worker stopped")
+
+    def _cleanup_finished_tasks(self):
+        """清理已完成的任务"""
+        finished = [exp_id for exp_id, task in self.inflight_tasks.items() if task.done()]
+        for exp_id in finished:
+            try:
+                task = self.inflight_tasks.pop(exp_id)
+                if task.exception():
+                    logger.error(f"Inflight task {exp_id} failed: {task.exception()}")
+            except Exception as e:
+                logger.warning(f"Error cleaning up task {exp_id}: {e}")
+
+    async def _process_training_task_with_slot(self, task_data: dict):
+        """带槽位管理的训练任务处理"""
+        experiment_id = task_data.get("experiment_id")
+        registered = False
+
+        try:
+            registered = await self._register_running_task(experiment_id)
+            if not registered:
+                logger.warning(f"Failed to register running task {experiment_id}, re-queuing...")
+                await self.redis.rpush(self.TRAINING_QUEUE, json.dumps(task_data))
+                return
+
+            await self.process_training_task(task_data)
+        except Exception as e:
+            logger.error(f"Error processing training task {experiment_id}: {e}", exc_info=True)
+        finally:
+            if registered:
+                await self._unregister_running_task(experiment_id)
+            if experiment_id in self.inflight_tasks:
+                del self.inflight_tasks[experiment_id]
+
+    async def _register_running_task(self, experiment_id: str) -> bool:
+        """注册运行中的任务到 Redis"""
+        try:
+            current_running = await self.redis.scard(self.RUNNING_TASKS_SET)
+            if current_running >= self.max_concurrency:
+                return False
+            await self.redis.sadd(self.RUNNING_TASKS_SET, experiment_id)
+            logger.info(f"Registered running task: {experiment_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to register running task {experiment_id}: {e}")
+            return False
+
+    async def _unregister_running_task(self, experiment_id: str):
+        """从 Redis 注销运行中的任务"""
+        try:
+            await self.redis.srem(self.RUNNING_TASKS_SET, experiment_id)
+            logger.info(f"Unregistered running task: {experiment_id}")
+        except Exception as e:
+            logger.error(f"Failed to unregister running task {experiment_id}: {e}")
 
     TASK_VERSION_PREFIX = "task:version:"  # 与 API 保持一致
 
@@ -367,16 +527,25 @@ class TrainingWorker:
             result = await run_training_task(ctx, experiment_id, training_config)
 
             if result.get("status") == "completed":
-                # 保存结果到数据库
-                await self.save_training_result(experiment_id, result)
+                # 保存结果到数据库（返回 model_id 用于版本创建）
+                model_id = await self.save_training_result(experiment_id, result)
 
-                # 更新状态为完成
+                # 更新状态为完成（先更新状态，再创建版本）
                 await self.update_experiment_status(
                     experiment_id,
                     "completed",
                     finished_at=datetime.utcnow()
                 )
                 logger.info(f"Training completed: {experiment_id}")
+
+                # 实验状态进入 completed 后创建版本快照
+                try:
+                    async with self.db_session_maker() as db:
+                        await self._create_model_version(
+                            db, experiment_id, result, model_id
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to create model version: {e}", exc_info=True)
             else:
                 raise Exception(result.get("error", "Training failed"))
 
