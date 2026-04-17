@@ -10,9 +10,10 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖
+# 安装 Python 依赖（排除 uvloop，使用原生 asyncio）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    && pip uninstall -y uvloop 2>/dev/null || true
 
 # 复制应用代码到 /app/app（保持与本地开发一致的路径结构）
 COPY app/ /app/app/
@@ -30,8 +31,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Performance optimization (M7-T101):
-# - Increase workers from 4 to 8 for better concurrency
-# - Increase backlog from 2048 to 4096 for high-concurrency bursts
-# - Use uvloop for better async performance
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "8", "--loop", "uvloop", "--backlog", "4096"]
+# Performance optimization (M7-T101-v4):
+# - Workers = 4 (match GitHub Actions ubuntu-latest CPU cores)
+# - Use native asyncio instead of uvloop (more stable in containers)
+# - Increase backlog for connection queuing
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--backlog", "2048"]
