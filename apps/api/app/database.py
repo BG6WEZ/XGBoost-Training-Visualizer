@@ -1,17 +1,30 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import select
+import os
 from app.config import settings
 
 DATABASE_URL = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 
-# Connection pool optimization for concurrent access
-# Each of 4 workers needs its own pool; total connections = pool_size * workers
+# Connection pool optimization (M7-T101)
+# In CI environment (GitHub Actions), use smaller pool sizes to avoid connection exhaustion
+# In production, use larger pools for better throughput
+IS_CI_ENV = os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
+
+def _get_pool_config():
+    """Get database pool configuration based on environment."""
+    if IS_CI_ENV:
+        return {"pool_size": 5, "max_overflow": 2}
+    else:
+        return {"pool_size": 10, "max_overflow": 5}
+
+_pool_config = _get_pool_config()
+
 engine = create_async_engine(
     DATABASE_URL,
     echo=settings.DEBUG,
-    pool_size=10,
-    max_overflow=5,
+    pool_size=_pool_config["pool_size"],
+    max_overflow=_pool_config["max_overflow"],
     pool_timeout=5,
     pool_recycle=1800,
     pool_pre_ping=True,

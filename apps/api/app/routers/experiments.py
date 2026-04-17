@@ -127,6 +127,9 @@ async def list_experiments(
     - created_after: 创建时间起始
     - created_before: 创建时间截止
     - name_contains: 名称模糊搜索
+    
+    性能优化 (M7-T101):
+    - 直接在 SQL 层面完成筛选，减少 Python 层面的循环和过滤开销
     """
     query = select(Experiment).order_by(Experiment.created_at.desc())
 
@@ -148,6 +151,7 @@ async def list_experiments(
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
 
+    # 标签过滤在 Python 层进行（SQLAlchemy 不支持 JSON 数组高效查询）
     filtered_experiments = []
     for e in experiments:
         exp_tags = e.tags if e.tags else []

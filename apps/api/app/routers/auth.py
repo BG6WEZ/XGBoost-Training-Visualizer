@@ -117,6 +117,10 @@ async def login(
     用户登录
     
     验证用户名和密码，返回访问令牌
+    
+    性能优化 (M7-T101):
+    - 延迟 last_login_at 更新到最后，避免阻塞响应
+    - 使用 background task 更新 last_login_at
     """
     result = await db.execute(
         select(User).where(User.username == request.username)
@@ -141,12 +145,20 @@ async def login(
             detail="用户名或密码错误"
         )
     
-    user.last_login_at = datetime.utcnow()
-    await db.commit()
-    
+    # 先创建 token 和响应，last_login_at 通过后台任务更新
     access_token = create_access_token(data={"sub": str(user.id)})
     
-    return LoginResponse(
+    # 后台更新 last_login_at，不阻塞响应
+    from fastapi import BackgroundTasks
+    
+    async def update_last_login():
+        try:
+            user.last_login_at = datetime.utcnow()
+            await db.commit()
+        except Exception:
+            pass  # 最后登录时间更新失败不影响登录流程
+    
+    response = LoginResponse(
         access_token=access_token,
         token_type="bearer",
         user=UserResponse(
@@ -159,6 +171,12 @@ async def login(
             last_login_at=user.last_login_at,
         )
     )
+    
+    # 使用 background task 更新 last_login_at
+    import asyncio
+    asyncio.create_task(update_last_login())
+    
+    return response
 
 
 @router.post("/auth/logout")

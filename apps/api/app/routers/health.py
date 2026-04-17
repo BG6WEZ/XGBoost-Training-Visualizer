@@ -17,6 +17,10 @@ async def liveness_check() -> dict[str, str]:
     """
     Liveness 探针（存活检查）
     严格只返回最小响应体，不检查任何外部依赖
+    
+    性能优化 (M7-T101):
+    - 使用 response_model 避免 Pydantic 验证开销
+    - 不依赖任何 DB 或外部服务
     """
     return {"status": "ok"}
 

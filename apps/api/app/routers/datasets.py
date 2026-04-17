@@ -222,16 +222,32 @@ async def list_datasets(
     limit: int = 20,
     db: AsyncSession = Depends(get_db)
 ):
-    """获取数据集列表"""
-    # 查询数据集及其文件数量
+    """获取数据集列表
+    
+    性能优化 (M7-T101):
+    - 使用两次查询替代 selectinload：先查列表，再批量查文件计数
+    - 避免 N+1 查询和大量 ORM 对象加载
+    """
+    # 第一次查询：只获取数据集基本信息（不预加载 files）
     result = await db.execute(
         select(Dataset)
-        .options(selectinload(Dataset.files))
         .order_by(Dataset.created_at.desc())
         .offset(skip)
         .limit(limit)
     )
     datasets = result.scalars().all()
+    
+    if not datasets:
+        return []
+
+    # 第二次查询：批量获取文件计数
+    dataset_ids = [d.id for d in datasets]
+    file_count_result = await db.execute(
+        select(DatasetFile.dataset_id, func.count(DatasetFile.id))
+        .where(DatasetFile.dataset_id.in_(dataset_ids))
+        .group_by(DatasetFile.dataset_id)
+    )
+    file_counts = {str(row[0]): row[1] for row in file_count_result.all()}
 
     return [
         {
@@ -241,7 +257,7 @@ async def list_datasets(
             "total_row_count": d.total_row_count,
             "total_column_count": d.total_column_count,
             "total_file_size": d.total_file_size,
-            "file_count": len(d.files),
+            "file_count": file_counts.get(str(d.id), 0),
             "created_at": d.created_at,
         }
         for d in datasets
