@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 import os
 from app.config import settings
 
@@ -106,8 +107,12 @@ async def init_db():
                 must_change_password=True,
             )
             session.add(admin_user)
-            await session.commit()
-            logging.info("Default admin user created successfully (username: admin)")
+            try:
+                await session.commit()
+                logging.info("Default admin user created successfully (username: admin)")
+            except IntegrityError:
+                await session.rollback()
+                logging.info("Default admin user already exists; startup race handled safely")
 
 
 async def get_db() -> AsyncSession:
