@@ -4,6 +4,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 import os
 import uuid
+import json
 
 from app.config import settings
 from app.logging_config import setup_logging, get_logger, request_id_ctx
@@ -89,7 +90,7 @@ async def lifespan(app: FastAPI):
     logger.info("Application shutting down")
 
 
-app = FastAPI(
+api_app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     docs_url="/docs",
@@ -98,10 +99,10 @@ app = FastAPI(
 )
 
 # Add request_id middleware
-app.add_middleware(RequestIdMiddleware)
+api_app.add_middleware(RequestIdMiddleware)
 
 # CORS 配置
-app.add_middleware(
+api_app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
@@ -110,13 +111,39 @@ app.add_middleware(
 )
 
 # 注册路由
-app.include_router(health.router, tags=["health"])
-app.include_router(assets.router, prefix="/api/assets", tags=["assets"])
-app.include_router(datasets.router, prefix="/api/datasets", tags=["datasets"])
-app.include_router(experiments.router, prefix="/api/experiments", tags=["experiments"])
-app.include_router(versions.router, prefix="/api", tags=["versions"])
-app.include_router(training.router, prefix="/api/training", tags=["training"])
-app.include_router(results.router, prefix="/api/results", tags=["results"])
-app.include_router(export.router, prefix="/api", tags=["export"])
-app.include_router(auth.router, prefix="/api", tags=["auth"])
-app.include_router(users.router, prefix="/api", tags=["users"])
+api_app.include_router(health.router, tags=["health"])
+api_app.include_router(assets.router, prefix="/api/assets", tags=["assets"])
+api_app.include_router(datasets.router, prefix="/api/datasets", tags=["datasets"])
+api_app.include_router(experiments.router, prefix="/api/experiments", tags=["experiments"])
+api_app.include_router(versions.router, prefix="/api", tags=["versions"])
+api_app.include_router(training.router, prefix="/api/training", tags=["training"])
+api_app.include_router(results.router, prefix="/api/results", tags=["results"])
+api_app.include_router(export.router, prefix="/api", tags=["export"])
+api_app.include_router(auth.router, prefix="/api", tags=["auth"])
+api_app.include_router(users.router, prefix="/api", tags=["users"])
+
+
+class _HealthBypassApp:
+    """Handle the hot liveness path before FastAPI middleware/router overhead."""
+
+    def __init__(self, inner_app):
+        self.inner_app = inner_app
+        self._health_body = json.dumps({"status": "ok"}).encode("utf-8")
+        self._health_headers = [(b"content-type", b"application/json")]
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") == "/health":
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": self._health_headers,
+                }
+            )
+            await send({"type": "http.response.body", "body": self._health_body})
+            return
+
+        await self.inner_app(scope, receive, send)
+
+
+app = _HealthBypassApp(api_app)

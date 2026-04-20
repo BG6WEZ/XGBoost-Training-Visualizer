@@ -31,8 +31,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Performance optimization (M7-T101-v6):
-# - Workers = 4 (match GitHub Actions ubuntu-latest CPU cores)
+# Performance optimization (M7-T101-v12):
+# - Workers = 8 to improve CPU-bound login throughput now that startup races are fixed
 # - Use native asyncio instead of uvloop (more stable in containers)
 # - Disable access log to remove per-request logging overhead during benchmark
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--backlog", "2048", "--no-access-log"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "8", "--backlog", "4096", "--no-access-log"]
