@@ -136,11 +136,6 @@ async def run_single_request(
     return result
 
 
-async def _semaphore_request(client, method, url, headers, body, file_path, sem):
-    """使用信号量限制并发的请求。"""
-    async with sem:
-        return await run_single_request(client, method, url, headers, body, file_path)
-
 async def run_endpoint_benchmark(
     base_url: str,
     endpoint: dict,
@@ -176,22 +171,22 @@ async def run_endpoint_benchmark(
         # The previous global warmup used a different client, so TCP/DNS/keepalive
         # costs still leaked into the measured requests.
         if endpoint["path"] != "/api/datasets/upload":
-            warmup_requests = min(concurrency, 20)
-            warmup_sem = asyncio.Semaphore(concurrency)
+            warmup_requests = concurrency
             warmup_tasks = [
-                _semaphore_request(client, endpoint["method"], url, headers, body, None, warmup_sem)
+                run_single_request(client, endpoint["method"], url, headers, body, None)
                 for _ in range(warmup_requests)
             ]
             await asyncio.gather(*warmup_tasks, return_exceptions=True)
 
-        # 使用信号量分批控制并发，避免同时创建大量连接
-        sem = asyncio.Semaphore(concurrency)
-        tasks = []
-        for _ in range(total_requests):
-            tasks.append(_semaphore_request(client, endpoint["method"], url, headers, body, file_path, sem))
-
-        # 并发执行
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        # 使用固定并发的分轮执行，避免一次性调度大量协程把客户端开销混入服务端延迟
+        responses = []
+        for _ in range(REQUESTS_PER_CONCURRENT):
+            batch_tasks = [
+                run_single_request(client, endpoint["method"], url, headers, body, file_path)
+                for _ in range(concurrency)
+            ]
+            batch_responses = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            responses.extend(batch_responses)
 
     # 统计结果
     for resp in responses:
