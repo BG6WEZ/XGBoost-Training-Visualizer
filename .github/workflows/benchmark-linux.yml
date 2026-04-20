@@ -58,7 +58,9 @@ jobs:
 
       - name: Run benchmark
         run: |
-          docker compose -f docker/docker-compose.yml exec -T api python /app/scripts/benchmark.py --base-url http://localhost:8000
+          API_CONTAINER_ID=$(docker compose -f docker/docker-compose.yml ps -q api)
+          docker cp scripts/benchmark.py "${API_CONTAINER_ID}:/app/benchmark.py"
+          docker compose -f docker/docker-compose.yml exec -T api python /app/benchmark.py --base-url http://localhost:8000
           echo "Exit code: $?"
 
       - name: Show Docker logs on failure
