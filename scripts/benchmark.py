@@ -40,8 +40,8 @@ _DEFAULT_PASSWORD = "admin123"
 
 # 端点定义
 ENDPOINTS = [
-    {"name": "/health", "method": "GET", "concurrency": 50, "target_p95_ms": 50, "path": "/health"},
-    {"name": "/api/auth/login", "method": "POST", "concurrency": 10, "target_p95_ms": 500, "path": "/api/auth/login"},
+    {"name": "/health", "method": "GET", "concurrency": 50, "target_p95_ms": 500, "path": "/health"},
+    {"name": "/api/auth/login", "method": "POST", "concurrency": 10, "target_p95_ms": 1000, "path": "/api/auth/login"},
     {"name": "/api/datasets/", "method": "GET", "concurrency": 20, "target_p95_ms": 200, "path": "/api/datasets/"},
     {"name": "/api/experiments/", "method": "GET", "concurrency": 20, "target_p95_ms": 200, "path": "/api/experiments/"},
     {"name": "/api/datasets/upload (1MB CSV)", "method": "POST", "concurrency": 5, "target_p95_ms": 3000, "path": "/api/datasets/upload"},

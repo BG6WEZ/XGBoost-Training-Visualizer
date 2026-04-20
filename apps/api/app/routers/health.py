@@ -19,8 +19,8 @@ async def liveness_check() -> dict[str, str]:
     严格只返回最小响应体，不检查任何外部依赖
     
     性能优化 (M7-T101):
-    - 使用 response_model 避免 Pydantic 验证开销
-    - 不依赖任何 DB 或外部服务
+    - 移除 Depends(get_db) 避免 DB session 创建开销
+    - 纯内存返回，零 I/O
     """
     return {"status": "ok"}
 
