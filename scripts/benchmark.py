@@ -239,11 +239,11 @@ async def run_benchmark(base_url: str):
             return None
         print(f"\n[/ready] 200 OK - 服务就绪")
 
-    # 0.5 Warmup: 发送少量预热请求，初始化连接池
+    # 0.5 Warmup: 发送预热请求，初始化连接池
     print("\n[Step 0.5] 发送预热请求...")
-    warmup_count = 5
+    warmup_count = 20
     async with httpx.AsyncClient(timeout=10.0) as client:
-        for i in range(warmup_count):
+        for _ in range(warmup_count):
             try:
                 await client.get(f"{base_url.rstrip('/')}/health")
             except Exception:
