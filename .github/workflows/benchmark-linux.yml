@@ -59,8 +59,8 @@ jobs:
       - name: Run benchmark
         run: |
           API_CONTAINER_ID=$(docker compose -f docker/docker-compose.yml ps -q api)
-          docker cp scripts/benchmark.py "${API_CONTAINER_ID}:/app/benchmark.py"
-          docker compose -f docker/docker-compose.yml exec -T api python /app/benchmark.py --base-url http://localhost:8000
+          API_NETWORK=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "${API_CONTAINER_ID}" | head -n1 | tr -d '\r')
+          docker run --rm --network "${API_NETWORK}" -v "${PWD}/scripts:/scripts" python:3.11-slim sh -lc "pip install --no-cache-dir httpx >/dev/null && python /scripts/benchmark.py --base-url http://api:8000"
           echo "Exit code: $?"
 
       - name: Show Docker logs on failure
