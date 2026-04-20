@@ -10,10 +10,9 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖（排除 uvloop，使用原生 asyncio）
+# 安装 Python 依赖（保留 uvloop/httptools 的高性能路径）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    && pip uninstall -y uvloop 2>/dev/null || true
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 复制应用代码到 /app/app（保持与本地开发一致的路径结构）
 COPY app/ /app/app/
@@ -31,8 +30,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Performance optimization (M7-T101-v12):
+# Performance optimization (M7-T101-v14):
 # - Workers = 8 to improve CPU-bound login throughput now that startup races are fixed
-# - Use native asyncio instead of uvloop (more stable in containers)
+# - Re-enable uvloop + httptools for the hot benchmark paths
 # - Disable access log to remove per-request logging overhead during benchmark
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "8", "--backlog", "4096", "--no-access-log"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "8", "--backlog", "4096", "--loop", "uvloop", "--http", "httptools", "--no-access-log"]
