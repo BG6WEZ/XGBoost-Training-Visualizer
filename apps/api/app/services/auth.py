@@ -24,8 +24,10 @@ from app.config import settings
 ALGORITHM = "HS256"
 logger = logging.getLogger(__name__)
 
-# Thread pool for CPU-bound bcrypt operations
-_executor = ThreadPoolExecutor(max_workers=4)
+# Thread pool for CPU-bound bcrypt operations.
+# Give login benchmark enough worker slots to avoid queueing on the client side
+# when the endpoint is exercised with concurrency=10.
+_executor = ThreadPoolExecutor(max_workers=max(8, (os.cpu_count() or 2) * 2))
 
 
 def hash_password(password: str) -> str:

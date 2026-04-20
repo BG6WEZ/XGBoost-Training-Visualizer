@@ -172,6 +172,18 @@ async def run_endpoint_benchmark(
     timeout = httpx.Timeout(30.0, connect=10.0)
 
     async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
+        # Warm up the same connection pool used by the actual measurement.
+        # The previous global warmup used a different client, so TCP/DNS/keepalive
+        # costs still leaked into the measured requests.
+        if endpoint["path"] != "/api/datasets/upload":
+            warmup_requests = min(concurrency, 20)
+            warmup_sem = asyncio.Semaphore(concurrency)
+            warmup_tasks = [
+                _semaphore_request(client, endpoint["method"], url, headers, body, None, warmup_sem)
+                for _ in range(warmup_requests)
+            ]
+            await asyncio.gather(*warmup_tasks, return_exceptions=True)
+
         # 使用信号量分批控制并发，避免同时创建大量连接
         sem = asyncio.Semaphore(concurrency)
         tasks = []
