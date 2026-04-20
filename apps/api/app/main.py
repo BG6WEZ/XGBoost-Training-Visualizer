@@ -26,6 +26,10 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
+        # Skip expensive middleware work for the hot liveness path.
+        if request.url.path == "/health":
+            return await call_next(request)
+
         # Get or generate request_id
         request_id = request.headers.get("X-Request-ID")
         if not request_id:
