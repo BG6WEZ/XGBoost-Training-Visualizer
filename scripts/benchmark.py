@@ -19,10 +19,18 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 try:
+    import uvloop  # type: ignore
+except ImportError:
+    uvloop = None
+
+try:
     import httpx
 except ImportError:
     print("ERROR: httpx is not installed. Please run: pip install httpx")
     sys.exit(1)
+
+if uvloop is not None:
+    uvloop.install()
 
 
 # ========== 配置 ==========
